@@ -1,0 +1,12 @@
+id = "laravel-assist"
+name = "Laravel Assist"
+version = "0.0.1"
+schema_version = 1
+authors = ["eyedroot <eyedroot@gmail.com>"]
+description = "Laravel-aware IDE support for Zed."
+repository = "https://github.com/eyedroot/zed-laravel-assist"
+
+[language_servers.laravel-assist]
+name = "Laravel Assist"
+languages = ["PHP", "Blade"]
+
