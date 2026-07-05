@@ -1,0 +1,871 @@
+import { TextDocument } from "vscode-languageserver-textdocument";
+import { describe, expect, it } from "vitest";
+import { definitionsForDocument } from "../src/definitions.js";
+import { emptyIndex, LaravelIndex } from "../src/projectIndex.js";
+
+describe("Laravel definitions", () => {
+  it("resolves named route definitions", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/DashboardController.php",
+      "php",
+      1,
+      "<?php\nroute('dashboard')",
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 10 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 64, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/routes/web.php",
+      },
+    ]);
+  });
+
+  it("resolves route definitions in broader route helper contexts", () => {
+    const cases = [
+      { character: 12, source: "<?php\nto_route('dashboard')" },
+      { character: 21, source: "<?php\nredirect()->route('dashboard')" },
+      { character: 22, source: "<?php\nrequest()->routeIs('dashboard')" },
+    ];
+
+    for (const testCase of cases) {
+      const document = TextDocument.create(
+        "file:///app/app/Http/Controllers/DashboardController.php",
+        "php",
+        1,
+        testCase.source,
+      );
+
+      expect(definitionsForDocument(document, { line: 1, character: testCase.character }, indexFixture)).toEqual([
+        {
+          range: {
+            end: { character: 64, line: 0 },
+            start: { character: 0, line: 0 },
+          },
+          uri: "file:///app/routes/web.php",
+        },
+      ]);
+    }
+  });
+
+  it("resolves named route parameter definitions", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\nroute('users.show', ['user' => $user]);",
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 23 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 72, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/routes/web.php",
+      },
+    ]);
+  });
+
+  it("resolves view helper and Blade directive definitions", () => {
+    const helperDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\nview('users.index')",
+    );
+    const bladeDocument = TextDocument.create(
+      "file:///app/resources/views/dashboard.blade.php",
+      "blade",
+      1,
+      "@include('users.index')",
+    );
+
+    expect(definitionsForDocument(helperDocument, { line: 1, character: 9 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/resources/views/users/index.blade.php",
+      },
+    ]);
+    expect(definitionsForDocument(bladeDocument, { line: 0, character: 13 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/resources/views/users/index.blade.php",
+      },
+    ]);
+  });
+
+  it("resolves Blade section definitions to the extended layout", () => {
+    const document = TextDocument.create(
+      "file:///app/resources/views/users/index.blade.php",
+      "blade",
+      1,
+      "@section('content')",
+    );
+
+    expect(definitionsForDocument(document, { line: 0, character: 12 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/resources/views/layouts/app.blade.php",
+      },
+    ]);
+  });
+
+  it("resolves Blade stack definitions to the extended layout", () => {
+    const document = TextDocument.create(
+      "file:///app/resources/views/users/index.blade.php",
+      "blade",
+      1,
+      "@push('scripts')",
+    );
+
+    expect(definitionsForDocument(document, { line: 0, character: 10 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/resources/views/layouts/app.blade.php",
+      },
+    ]);
+  });
+
+  it("resolves Blade component tag definitions", () => {
+    const document = TextDocument.create(
+      "file:///app/resources/views/users/index.blade.php",
+      "blade",
+      1,
+      "<x-forms.input />",
+    );
+
+    expect(definitionsForDocument(document, { line: 0, character: 5 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/View/Components/Forms/Input.php",
+      },
+    ]);
+  });
+
+  it("resolves Blade component prop definitions", () => {
+    const document = TextDocument.create(
+      "file:///app/resources/views/users/index.blade.php",
+      "blade",
+      1,
+      '<x-forms.input label-text="Email" />',
+    );
+
+    expect(definitionsForDocument(document, { line: 0, character: 18 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/View/Components/Forms/Input.php",
+      },
+    ]);
+  });
+
+  it("resolves broader Laravel string definitions", () => {
+    const cases = [
+      {
+        character: 11,
+        source: "<?php\n__('messages.welcome')",
+        uri: "file:///app/lang/en/messages.php",
+      },
+      {
+        character: 16,
+        source: "<?php\nGate::allows('publish-posts')",
+        uri: "file:///app/app/Providers/AuthServiceProvider.php",
+      },
+      {
+        character: 11,
+        source: "<?php\napp('reporter')",
+        uri: "file:///app/app/Providers/AppServiceProvider.php",
+      },
+      {
+        character: 18,
+        source: "<?php\nArtisan::call('users:sync')",
+        uri: "file:///app/app/Console/Commands/SyncUsersCommand.php",
+      },
+      {
+        character: 22,
+        source: "<?php\nRoute::middleware('auth.admin')",
+        uri: "file:///app/bootstrap/app.php",
+      },
+      {
+        character: 97,
+        source: "<?php\nclass UserController { public function store(StoreUserRequest $request) { $request->validated('email'); } }",
+        uri: "file:///app/app/Http/Requests/StoreUserRequest.php",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const document = TextDocument.create(
+        "file:///app/app/Http/Controllers/UserController.php",
+        "php",
+        1,
+        testCase.source,
+      );
+
+      expect(definitionsForDocument(document, { line: 1, character: testCase.character }, indexFixture)).toEqual([
+        {
+          range: {
+            end: { character: 0, line: 0 },
+            start: { character: 0, line: 0 },
+          },
+          uri: testCase.uri,
+        },
+      ]);
+    }
+  });
+
+  it("resolves config and env definitions to indexed source ranges", () => {
+    const configDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\nconfig('services.mailgun.domain')",
+    );
+    const envDocument = TextDocument.create(
+      "file:///app/config/app.php",
+      "php",
+      1,
+      "<?php\nenv('APP_NAME')",
+    );
+
+    expect(definitionsForDocument(configDocument, { line: 1, character: 11 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 18, line: 4 },
+          start: { character: 12, line: 4 },
+        },
+        uri: "file:///app/config/services.php",
+      },
+    ]);
+    expect(definitionsForDocument(envDocument, { line: 1, character: 6 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 8, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/.env",
+      },
+    ]);
+  });
+
+  it("resolves schema table and column definitions inside validation Rule calls", () => {
+    const tableSource = "<?php\nRule::exists('users', 'email')";
+    const columnSource = "<?php\nRule::exists('users', 'email')";
+    const tableLine = tableSource.split("\n")[1];
+    const tableDocument = TextDocument.create(
+      "file:///app/app/Http/Requests/StoreUserRequest.php",
+      "php",
+      1,
+      tableSource,
+    );
+    const columnDocument = TextDocument.create(
+      "file:///app/app/Http/Requests/StoreUserRequest.php",
+      "php",
+      1,
+      columnSource,
+    );
+
+    expect(definitionsForDocument(tableDocument, { line: 1, character: tableLine.indexOf("users") + 1 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/database/migrations/2024_01_01_000000_create_users_table.php",
+      },
+    ]);
+    expect(definitionsForDocument(columnDocument, { line: 1, character: tableLine.indexOf("email") + 1 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/database/migrations/2024_01_01_000000_create_users_table.php",
+      },
+    ]);
+  });
+
+  it("resolves Eloquent relation, scope, and attribute definitions", () => {
+    const relationDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\nUser::with('posts');",
+    );
+    const scopeDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\nUser::active();",
+    );
+    const attributeDocument = TextDocument.create(
+      "file:///app/app/Models/User.php",
+      "php",
+      1,
+      "<?php\nclass User extends Model\n{\n    protected $fillable = ['email'];\n}\n",
+    );
+
+    expect(definitionsForDocument(relationDocument, { line: 1, character: 13 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/Models/User.php",
+      },
+    ]);
+    expect(definitionsForDocument(scopeDocument, { line: 1, character: 8 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/Models/User.php",
+      },
+    ]);
+    expect(definitionsForDocument(attributeDocument, { line: 3, character: 31 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/database/migrations/2024_01_01_000000_create_users_table.php",
+      },
+    ]);
+  });
+
+  it("resolves custom Eloquent builder method definitions", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\nUser::query()->popularForTenant();",
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 18 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/Models/Builders/UserBuilder.php",
+      },
+    ]);
+  });
+
+  it("resolves factory state definitions", () => {
+    const document = TextDocument.create(
+      "file:///app/database/seeders/DatabaseSeeder.php",
+      "php",
+      1,
+      "<?php\nUser::factory()->suspended();",
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 21 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/database/factories/UserFactory.php",
+      },
+    ]);
+  });
+
+  it("resolves seeder class definitions inside seeder calls", () => {
+    const document = TextDocument.create(
+      "file:///app/database/seeders/DatabaseSeeder.php",
+      "php",
+      1,
+      "<?php\n$this->call([UserSeeder::class, Database\\Seeders\\DatabaseSeeder::class]);",
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 15 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/database/seeders/UserSeeder.php",
+      },
+    ]);
+    expect(definitionsForDocument(document, { line: 1, character: 48 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/database/seeders/DatabaseSeeder.php",
+      },
+    ]);
+  });
+
+  it("resolves macro method definitions", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\nStr::headlineSlug();",
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 8 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/Providers/AppServiceProvider.php",
+      },
+    ]);
+  });
+
+  it("resolves Laravel artifact class definitions", () => {
+    const eventDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/OrderController.php",
+      "php",
+      1,
+      "<?php\nevent(new OrderShipped());",
+    );
+    const jobDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/OrderController.php",
+      "php",
+      1,
+      "<?php\nSyncUsers::dispatch();",
+    );
+
+    expect(definitionsForDocument(eventDocument, { line: 1, character: 12 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/Events/OrderShipped.php",
+      },
+    ]);
+    expect(definitionsForDocument(jobDocument, { line: 1, character: 3 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/Jobs/SyncUsers.php",
+      },
+    ]);
+  });
+
+  it("resolves custom facade static call definitions", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/ReportController.php",
+      "php",
+      1,
+      "<?php\nReports::monthly();",
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 2 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/Facades/Reports.php",
+      },
+    ]);
+  });
+
+  it("resolves service provider registration definitions", () => {
+    const document = TextDocument.create(
+      "file:///app/bootstrap/providers.php",
+      "php",
+      1,
+      "<?php\nreturn [App\\Providers\\ReportServiceProvider::class];",
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 24 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/Providers/ReportServiceProvider.php",
+      },
+    ]);
+  });
+
+  it("resolves route controller and action definitions", () => {
+    const document = TextDocument.create(
+      "file:///app/routes/web.php",
+      "php",
+      1,
+      "<?php\nRoute::get('/users', [UserController::class, 'index']);",
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 28 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/Http/Controllers/UserController.php",
+      },
+    ]);
+    expect(definitionsForDocument(document, { line: 1, character: 50 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 25, line: 4 },
+          start: { character: 20, line: 4 },
+        },
+        uri: "file:///app/app/Http/Controllers/UserController.php",
+      },
+    ]);
+  });
+
+  it("resolves route controller aliases", () => {
+    const document = TextDocument.create(
+      "file:///app/routes/web.php",
+      "php",
+      1,
+      "<?php\nuse App\\Http\\Controllers\\UserController as Users;\nRoute::get('/users', [Users::class, 'index']);",
+    );
+
+    expect(definitionsForDocument(document, { line: 2, character: 24 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/Http/Controllers/UserController.php",
+      },
+    ]);
+    expect(definitionsForDocument(document, { line: 2, character: 38 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 25, line: 4 },
+          start: { character: 20, line: 4 },
+        },
+        uri: "file:///app/app/Http/Controllers/UserController.php",
+      },
+    ]);
+  });
+
+  it("resolves route controller group action definitions", () => {
+    const document = TextDocument.create(
+      "file:///app/routes/web.php",
+      "php",
+      1,
+      "<?php\nRoute::controller(UserController::class)->group(function () {\n    Route::get('/users', 'index');\n});",
+    );
+
+    expect(definitionsForDocument(document, { line: 2, character: 28 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 25, line: 4 },
+          start: { character: 20, line: 4 },
+        },
+        uri: "file:///app/app/Http/Controllers/UserController.php",
+      },
+    ]);
+  });
+});
+
+const indexFixture: LaravelIndex = {
+  ...emptyIndex(),
+  bladeComponents: [
+    {
+      filePath: "/app/app/View/Components/Forms/Input.php",
+      name: "forms.input",
+      props: ["label-text", "required"],
+      source: "class",
+      viewName: "components.forms.input",
+    },
+  ],
+  bladeViews: [
+    {
+      components: [],
+      extends: "layouts.app",
+      filePath: "/app/resources/views/users/index.blade.php",
+      includes: [],
+      name: "users.index",
+      props: [],
+      sections: [],
+      yields: [],
+    },
+    {
+      components: [],
+      extends: null,
+      filePath: "/app/resources/views/layouts/app.blade.php",
+      includes: [],
+      name: "layouts.app",
+      props: [],
+      sections: [],
+      stacks: ["scripts"],
+      yields: ["content", "scripts"],
+    },
+  ],
+  routes: [
+    {
+      action: "DashboardController::class",
+      domain: null,
+      filePath: "/app/routes/web.php",
+      methods: ["GET"],
+      middleware: [],
+      name: "dashboard",
+      namePrefix: "",
+      range: {
+        end: { character: 64, line: 0 },
+        start: { character: 0, line: 0 },
+      },
+      uri: "/dashboard",
+      uriPrefix: "",
+    },
+    {
+      action: "UserController::class",
+      domain: null,
+      filePath: "/app/routes/web.php",
+      methods: ["GET"],
+      middleware: [],
+      name: "users.show",
+      namePrefix: "",
+      range: {
+        end: { character: 72, line: 0 },
+        start: { character: 0, line: 0 },
+      },
+      uri: "users/{user}/teams/{team?}",
+      uriPrefix: "",
+    },
+  ],
+  authorization: [
+    {
+      ability: "publish-posts",
+      filePath: "/app/app/Providers/AuthServiceProvider.php",
+      model: "Post",
+      policy: "PostPolicy",
+      source: "gate",
+    },
+  ],
+  commands: [
+    {
+      className: "SyncUsersCommand",
+      description: "Sync users",
+      filePath: "/app/app/Console/Commands/SyncUsersCommand.php",
+      name: "users:sync",
+      namespace: "App\\Console\\Commands",
+      signature: "users:sync {--force}",
+      source: "class",
+    },
+  ],
+  containerBindings: [
+    {
+      abstract: "reporter",
+      concrete: "DatabaseReporter",
+      filePath: "/app/app/Providers/AppServiceProvider.php",
+      lifetime: "singleton",
+    },
+  ],
+  controllers: [
+    {
+      actionDetails: [
+        {
+          name: "index",
+          range: {
+            end: { character: 25, line: 4 },
+            start: { character: 20, line: 4 },
+          },
+        },
+        {
+          name: "store",
+          range: {
+            end: { character: 25, line: 8 },
+            start: { character: 20, line: 8 },
+          },
+        },
+      ],
+      actions: ["index", "store"],
+      className: "UserController",
+      filePath: "/app/app/Http/Controllers/UserController.php",
+      namespace: "App\\Http\\Controllers",
+    },
+  ],
+  middleware: [
+    {
+      alias: "auth.admin",
+      className: "App\\Http\\Middleware\\EnsureAdmin",
+      filePath: "/app/bootstrap/app.php",
+      source: "bootstrap",
+    },
+  ],
+  models: [
+    {
+      casts: [],
+      className: "User",
+      customBuilder: {
+        className: "UserBuilder",
+        filePath: "/app/app/Models/Builders/UserBuilder.php",
+        methods: [
+          {
+            name: "popularForTenant",
+            returnType: "static",
+          },
+        ],
+        namespace: "App\\Models\\Builders",
+      },
+      filePath: "/app/app/Models/User.php",
+      fillable: ["email"],
+      guarded: [],
+      namespace: "App\\Models",
+      relations: [
+        {
+          name: "posts",
+          relatedModel: "Post",
+          type: "hasMany",
+        },
+      ],
+      relationships: ["posts"],
+      scopes: ["active"],
+      tableName: "users",
+    },
+  ],
+  schemaTables: [
+    {
+      columns: [
+        {
+          filePath: "/app/database/migrations/2024_01_01_000000_create_users_table.php",
+          modifiers: ["unique"],
+          name: "email",
+          tableName: "users",
+          type: "string",
+        },
+      ],
+      filePath: "/app/database/migrations/2024_01_01_000000_create_users_table.php",
+      name: "users",
+    },
+  ],
+  translationKeys: [
+    {
+      filePath: "/app/lang/en/messages.php",
+      key: "messages.welcome",
+      locale: "en",
+      namespace: null,
+      source: "php",
+    },
+  ],
+  configEntries: [
+    {
+      filePath: "/app/config/services.php",
+      key: "services.mailgun.domain",
+      range: {
+        end: { character: 18, line: 4 },
+        start: { character: 12, line: 4 },
+      },
+    },
+  ],
+  configKeys: ["services.mailgun.domain"],
+  envEntries: [
+    {
+      filePath: "/app/.env",
+      key: "APP_NAME",
+      range: {
+        end: { character: 8, line: 0 },
+        start: { character: 0, line: 0 },
+      },
+    },
+  ],
+  envKeys: ["APP_NAME"],
+  factories: [
+    {
+      className: "UserFactory",
+      definitionFields: ["email"],
+      filePath: "/app/database/factories/UserFactory.php",
+      model: "User",
+      namespace: "Database\\Factories",
+      states: ["suspended"],
+    },
+  ],
+  seeders: [
+    {
+      calls: ["UserSeeder"],
+      className: "DatabaseSeeder",
+      filePath: "/app/database/seeders/DatabaseSeeder.php",
+      namespace: "Database\\Seeders",
+    },
+    {
+      calls: [],
+      className: "UserSeeder",
+      filePath: "/app/database/seeders/UserSeeder.php",
+      namespace: "Database\\Seeders",
+    },
+  ],
+  macros: [
+    {
+      className: "Str",
+      filePath: "/app/app/Providers/AppServiceProvider.php",
+      method: "headlineSlug",
+    },
+  ],
+  artifacts: [
+    {
+      className: "OrderShipped",
+      filePath: "/app/app/Events/OrderShipped.php",
+      kind: "event",
+      namespace: "App\\Events",
+      related: [],
+    },
+    {
+      className: "SyncUsers",
+      filePath: "/app/app/Jobs/SyncUsers.php",
+      kind: "job",
+      namespace: "App\\Jobs",
+      related: [],
+    },
+  ],
+  facades: [
+    {
+      accessor: "reports",
+      className: "Reports",
+      filePath: "/app/app/Facades/Reports.php",
+      namespace: "App\\Facades",
+    },
+  ],
+  providers: [
+    {
+      classFilePath: "/app/app/Providers/ReportServiceProvider.php",
+      className: "ReportServiceProvider",
+      filePath: "/app/bootstrap/providers.php",
+      namespace: "App\\Providers",
+      source: "bootstrap",
+    },
+  ],
+  validationRules: [
+    {
+      className: "StoreUserRequest",
+      fields: [
+        {
+          field: "email",
+          rules: ["email", "required"],
+        },
+      ],
+      filePath: "/app/app/Http/Requests/StoreUserRequest.php",
+      namespace: "App\\Http\\Requests",
+      source: "formRequest",
+    },
+  ],
+  views: ["users.index"],
+};

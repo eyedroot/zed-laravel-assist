@@ -4,7 +4,9 @@ import {
   InsertTextFormat,
 } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
-import { LaravelIndex } from "./projectIndex.js";
+import { fileURLToPath } from "node:url";
+import { LaravelIndex, SchemaColumnInfo, ValidationFieldInfo } from "./projectIndex.js";
+import { resolvePhpClassReference } from "./phpResolver.js";
 
 export function completionsForDocument(
   document: TextDocument,
@@ -16,20 +18,291 @@ export function completionsForDocument(
     end: position,
   });
 
-  if (isInsideStringCall(line, "route")) {
-    return index.routes.map((route) => ({
-      label: route.name,
-      kind: CompletionItemKind.Value,
-      detail: "Laravel route",
-      data: { filePath: route.filePath },
+  if (isInsideModelAttributeArray(document, position)) {
+    return schemaColumnsForDocument(document, index).map((column) => ({
+      label: column.name,
+      kind: CompletionItemKind.Field,
+      detail: schemaColumnDetail(column),
+      data: { filePath: column.filePath, tableName: column.tableName },
     }));
   }
 
-  if (isInsideStringCall(line, "view")) {
-    return index.views.map((view) => ({
-      label: view,
+  const validationSchemaContext = validationSchemaContextForLine(line);
+  if (validationSchemaContext?.kind === "table") {
+    return index.schemaTables.map((table) => ({
+      label: table.name,
+      kind: CompletionItemKind.Struct,
+      detail: `Schema table ${table.columns.length} columns`,
+      data: { filePath: table.filePath },
+    }));
+  }
+  if (validationSchemaContext?.kind === "column") {
+    return (
+      index.schemaTables
+        .find((table) => table.name === validationSchemaContext.tableName)
+        ?.columns.map((column) => ({
+          label: column.name,
+          kind: CompletionItemKind.Field,
+          detail: schemaColumnDetail(column),
+          data: { filePath: column.filePath, tableName: column.tableName },
+        })) ?? []
+    );
+  }
+
+  if (isInsideValidationFieldCall(line)) {
+    return validationFieldsForDocument(document, index).map((field) => ({
+      label: field.field,
+      kind: CompletionItemKind.Field,
+      detail: validationFieldDetail(field),
+    }));
+  }
+
+  if (isInsideTranslationKeyString(line)) {
+    return index.translationKeys.map((translation) => ({
+      label: translation.key,
+      kind: CompletionItemKind.Text,
+      detail: translationDetail(translation.locale, translation.source),
+      data: { filePath: translation.filePath, locale: translation.locale },
+    }));
+  }
+
+  if (isInsideAuthorizationAbilityString(line)) {
+    return index.authorization.map((entry) => ({
+      label: entry.ability,
+      kind: CompletionItemKind.Value,
+      detail: authorizationDetail(entry),
+      data: { filePath: entry.filePath, policy: entry.policy },
+    }));
+  }
+
+  if (isInsideContainerResolutionString(line)) {
+    return index.containerBindings.map((binding) => ({
+      label: binding.abstract,
+      kind: CompletionItemKind.Interface,
+      detail: containerBindingDetail(binding),
+      data: { filePath: binding.filePath, concrete: binding.concrete },
+    }));
+  }
+
+  if (isInsideArtisanCommandString(line)) {
+    return index.commands.map((command) => ({
+      label: command.name,
+      kind: CompletionItemKind.Function,
+      detail: commandDetail(command),
+      data: { filePath: command.filePath, signature: command.signature },
+    }));
+  }
+
+  if (isInsideMiddlewareString(line)) {
+    return index.middleware.map((entry) => ({
+      label: entry.alias,
+      kind: CompletionItemKind.Value,
+      detail: middlewareDetail(entry),
+      data: { filePath: entry.filePath, className: entry.className },
+    }));
+  }
+
+  if (isInsideProviderClassArray(document, line)) {
+    return index.providers
+      .filter((provider) => provider.source === "class")
+      .map((provider) => ({
+        label: provider.namespace ? `${provider.namespace}\\${provider.className}` : provider.className,
+        kind: CompletionItemKind.Class,
+        detail: "Laravel service provider",
+        data: { filePath: provider.classFilePath ?? provider.filePath, source: provider.source },
+      }));
+  }
+
+  const relationModel = eloquentRelationModel(line);
+  if (relationModel) {
+    const relationCompletions = index.models
+      .filter((model) => model.className === relationModel || `${model.namespace}\\${model.className}` === relationModel)
+      .flatMap((model) =>
+        model.relations.map((relation) => ({
+          label: relation.name,
+          kind: CompletionItemKind.Property,
+          detail: eloquentRelationDetail(model, relation),
+          data: { filePath: model.filePath, model: model.className, relation: relation.name },
+        })),
+      );
+    if (relationCompletions.length > 0) {
+      return relationCompletions;
+    }
+  }
+
+  const macroClass = macroStaticCallClass(line);
+  if (macroClass) {
+    const macroCompletions = index.macros
+      .filter((macro) => macro.className.split("\\").at(-1) === macroClass || macro.className === macroClass)
+      .map((macro) => ({
+        label: macro.method,
+        kind: CompletionItemKind.Method,
+        detail: `Laravel macro ${macro.className}`,
+        data: { filePath: macro.filePath, className: macro.className },
+      }));
+    if (macroCompletions.length > 0) {
+      return macroCompletions;
+    }
+  }
+
+  const factoryModel = factoryStateModel(line);
+  if (factoryModel) {
+    return index.factories
+      .filter((factory) => factory.model?.split("\\").at(-1) === factoryModel || factory.model === factoryModel)
+      .flatMap((factory) =>
+        factory.states.map((state) => ({
+          label: state,
+          kind: CompletionItemKind.Method,
+          detail: `Factory state ${factory.className}`,
+          data: { filePath: factory.filePath, model: factory.model },
+        })),
+      );
+  }
+
+  const scopeModel = eloquentScopeModel(line);
+  if (scopeModel) {
+    const modelCompletions = index.models
+      .filter((model) => model.className === scopeModel || `${model.namespace}\\${model.className}` === scopeModel)
+      .flatMap((model) =>
+        [
+          ...model.scopes.map((scope) => ({
+            label: scope,
+            kind: CompletionItemKind.Method,
+            detail: `Eloquent scope ${model.className}`,
+            data: { filePath: model.filePath, model: model.className },
+          })),
+          ...customBuilderMethodCompletions(model),
+        ],
+      );
+    if (modelCompletions.length > 0) {
+      return modelCompletions;
+    }
+  }
+
+  if (isInsideSeederCallArray(line)) {
+    return index.seeders.map((seeder) => ({
+      label: seeder.namespace ? `${seeder.namespace}\\${seeder.className}` : seeder.className,
+      kind: CompletionItemKind.Class,
+      detail: seeder.calls.length > 0 ? `Seeder calls ${seeder.calls.join(", ")}` : "Laravel seeder",
+      data: { filePath: seeder.filePath },
+    }));
+  }
+
+  const controllerActionClass = routeControllerActionClass(line) ?? routeControllerGroupActionClass(document, position.line, line);
+  if (controllerActionClass) {
+    const resolvedControllerActionClass = resolvePhpClassReference(document.getText(), controllerActionClass);
+    return index.controllers
+      .filter((controller) => controllerMatches(controller, resolvedControllerActionClass))
+      .flatMap((controller) =>
+        controller.actions.map((action) => ({
+          label: action,
+          kind: CompletionItemKind.Method,
+          detail: `Laravel controller action ${controller.className}`,
+          data: { filePath: controller.filePath },
+        })),
+      );
+  }
+
+  if (isInsideRouteControllerClassContext(line)) {
+    return index.controllers.map((controller) => ({
+      label: controller.namespace ? `${controller.namespace}\\${controller.className}` : controller.className,
+      kind: CompletionItemKind.Class,
+      detail: "Laravel controller",
+      data: { filePath: controller.filePath },
+    }));
+  }
+
+  const artifactKinds = artifactContextKinds(line);
+  if (artifactKinds) {
+    return index.artifacts
+      .filter((artifact) => artifactKinds.includes(artifact.kind))
+      .map((artifact) => ({
+        label: artifact.namespace ? `${artifact.namespace}\\${artifact.className}` : artifact.className,
+        kind: CompletionItemKind.Class,
+        detail: laravelArtifactDetail(artifact),
+        data: { filePath: artifact.filePath, kind: artifact.kind },
+      }));
+  }
+
+  if (isInsideBladeViewDirectiveString(line)) {
+    return index.bladeViews.map((view) => ({
+      label: view.name,
       kind: CompletionItemKind.File,
-      detail: "Laravel view",
+      detail: bladeViewDetail(view),
+      data: { filePath: view.filePath },
+    }));
+  }
+
+  const sectionLayout = bladeSectionLayoutForDocument(document, line, index);
+  if (sectionLayout) {
+    return sectionLayout.yields.map((section) => ({
+      label: section,
+      kind: CompletionItemKind.Property,
+      detail: `Blade section ${sectionLayout.name}`,
+      data: { filePath: sectionLayout.filePath, layout: sectionLayout.name },
+    }));
+  }
+
+  const stackLayout = bladeStackLayoutForDocument(document, line, index);
+  if (stackLayout) {
+    return (stackLayout.stacks ?? []).map((stack) => ({
+      label: stack,
+      kind: CompletionItemKind.Property,
+      detail: `Blade stack ${stackLayout.name}`,
+      data: { filePath: stackLayout.filePath, layout: stackLayout.name },
+    }));
+  }
+
+  const componentTag = bladeComponentTagContext(line);
+  if (componentTag === "tag") {
+    return index.bladeComponents.map((component) => ({
+      label: component.name,
+      kind: CompletionItemKind.Class,
+      detail: bladeComponentDetail(component),
+      data: { filePath: component.filePath, viewName: component.viewName },
+    }));
+  }
+
+  if (componentTag?.kind === "props") {
+    const component = index.bladeComponents.find((candidate) => candidate.name === componentTag.name);
+    return (
+      component?.props.map((prop) => ({
+        label: prop,
+        kind: CompletionItemKind.Property,
+        detail: `Blade ${component.source} component prop ${component.name}`,
+        data: { filePath: component.filePath, viewName: component.viewName },
+      })) ?? []
+    );
+  }
+
+  const routeParameterName = routeParameterCompletionRouteName(line);
+  if (routeParameterName) {
+    const route = index.routes.find((candidate) => candidate.name === routeParameterName);
+    return routeParameters(route).map((parameter) => ({
+      label: parameter,
+      kind: CompletionItemKind.Field,
+      detail: routeParameterDetail(route),
+      data: { filePath: route?.filePath, route: route?.name, uri: route?.uri },
+    }));
+  }
+
+  if (isInsideRouteNameString(line)) {
+    return index.routes
+      .filter((route) => route.name)
+      .map((route) => ({
+        label: route.name ?? "",
+        kind: CompletionItemKind.Value,
+        detail: routeDetail(route.methods, route.uri),
+        data: { filePath: route.filePath, range: route.range },
+      }));
+  }
+
+  if (isInsideStringCall(line, "view")) {
+    return index.bladeViews.map((view) => ({
+      label: view.name,
+      kind: CompletionItemKind.File,
+      detail: bladeViewDetail(view),
+      data: { filePath: view.filePath },
     }));
   }
 
@@ -50,19 +323,474 @@ export function completionsForDocument(
   }
 
   if (/\b(new|extends|implements)\s+[A-Za-z_\\]*$/.test(line)) {
-    return index.models.map((model) => ({
-      label: model.namespace ? `${model.namespace}\\${model.className}` : model.className,
-      kind: CompletionItemKind.Class,
-      detail: "Eloquent model",
-      data: { filePath: model.filePath },
-    }));
+    return [
+      ...index.models.map((model) => ({
+        label: model.namespace ? `${model.namespace}\\${model.className}` : model.className,
+        kind: CompletionItemKind.Class,
+        detail: "Eloquent model",
+        data: { filePath: model.filePath },
+      })),
+      ...index.facades.map((facade) => ({
+        label: facade.namespace ? `${facade.namespace}\\${facade.className}` : facade.className,
+        kind: CompletionItemKind.Class,
+        detail: facadeDetail(facade),
+        data: { filePath: facade.filePath, accessor: facade.accessor, binding: facade.binding?.abstract },
+      })),
+      ...index.controllers.map((controller) => ({
+        label: controller.namespace ? `${controller.namespace}\\${controller.className}` : controller.className,
+        kind: CompletionItemKind.Class,
+        detail: "Laravel controller",
+        data: { filePath: controller.filePath },
+      })),
+      ...index.artifacts.map((artifact) => ({
+        label: artifact.namespace ? `${artifact.namespace}\\${artifact.className}` : artifact.className,
+        kind: CompletionItemKind.Class,
+        detail: laravelArtifactDetail(artifact),
+        data: { filePath: artifact.filePath, kind: artifact.kind },
+      })),
+      ...index.providers
+        .filter((provider) => provider.source === "class")
+        .map((provider) => ({
+          label: provider.namespace ? `${provider.namespace}\\${provider.className}` : provider.className,
+          kind: CompletionItemKind.Class,
+          detail: "Laravel service provider",
+          data: { filePath: provider.classFilePath ?? provider.filePath, source: provider.source },
+        })),
+    ];
   }
 
   return helperCompletions();
 }
 
+function routeDetail(methods: string[], uri: string | null): string {
+  return ["Laravel route", methods.join("|"), uri].filter(Boolean).join(" ");
+}
+
+function routeParameterDetail(route: LaravelIndex["routes"][number] | undefined): string {
+  return ["Route parameter", route?.name, route?.uri].filter(Boolean).join(" ");
+}
+
+function routeParameters(route: LaravelIndex["routes"][number] | undefined): string[] {
+  if (!route?.uri) {
+    return [];
+  }
+
+  return [...route.uri.matchAll(/\{([A-Za-z_][A-Za-z0-9_]*)(?:\?)?\}/g)].map((match) => match[1]);
+}
+
+function schemaColumnDetail(column: SchemaColumnInfo): string {
+  return [column.tableName, column.type, column.modifiers.join(", ")]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function validationFieldDetail(field: ValidationFieldInfo): string {
+  return ["Validation field", field.rules.join("|")].filter(Boolean).join(" ");
+}
+
+function translationDetail(locale: string, source: string): string {
+  return `Laravel translation ${locale} ${source}`;
+}
+
+function authorizationDetail(entry: LaravelIndex["authorization"][number]): string {
+  return ["Laravel ability", entry.source, entry.policy].filter(Boolean).join(" ");
+}
+
+function containerBindingDetail(binding: LaravelIndex["containerBindings"][number]): string {
+  return ["Container binding", binding.lifetime, binding.concrete].filter(Boolean).join(" ");
+}
+
+function facadeDetail(facade: LaravelIndex["facades"][number]): string {
+  return [
+    "Laravel facade",
+    facade.accessor,
+    facade.binding ? `${facade.binding.lifetime} binding` : "",
+    facade.binding?.concrete,
+  ].filter(Boolean).join(" ");
+}
+
+function commandDetail(command: LaravelIndex["commands"][number]): string {
+  return ["Artisan command", command.signature, command.description].filter(Boolean).join(" ");
+}
+
+function middlewareDetail(entry: LaravelIndex["middleware"][number]): string {
+  return ["Laravel middleware", entry.source, entry.className].filter(Boolean).join(" ");
+}
+
+function bladeViewDetail(view: LaravelIndex["bladeViews"][number]): string {
+  return ["Laravel view", view.extends ? `extends ${view.extends}` : ""].filter(Boolean).join(" ");
+}
+
+function bladeComponentDetail(component: LaravelIndex["bladeComponents"][number]): string {
+  return `Blade ${component.source} component`;
+}
+
+function eloquentRelationDetail(
+  model: LaravelIndex["models"][number],
+  relation: LaravelIndex["models"][number]["relations"][number],
+): string {
+  return [`Eloquent relation ${model.className}`, relation.type, relation.relatedModel].filter(Boolean).join(" ");
+}
+
+function customBuilderMethodCompletions(model: LaravelIndex["models"][number]): CompletionItem[] {
+  return model.customBuilder?.methods.map((method) => ({
+    label: method.name,
+    kind: CompletionItemKind.Method,
+    detail: `Custom Eloquent builder ${model.customBuilder?.className}`,
+    data: {
+      filePath: model.customBuilder?.filePath,
+      model: model.className,
+      returnType: method.returnType,
+    },
+  })) ?? [];
+}
+
+function laravelArtifactDetail(artifact: LaravelIndex["artifacts"][number]): string {
+  return [`Laravel ${artifact.kind}`, artifact.related.length > 0 ? artifact.related.join(", ") : ""]
+    .filter(Boolean)
+    .join(" ");
+}
+
+function schemaColumnsForDocument(document: TextDocument, index: LaravelIndex): SchemaColumnInfo[] {
+  const documentPath = documentPathFromUri(document.uri);
+  if (!documentPath) {
+    return [];
+  }
+
+  const model = index.models.find((candidate) => candidate.filePath === documentPath);
+  if (!model) {
+    return [];
+  }
+
+  return index.schemaTables.find((table) => table.name === model.tableName)?.columns ?? [];
+}
+
+function validationFieldsForDocument(
+  document: TextDocument,
+  index: LaravelIndex,
+): ValidationFieldInfo[] {
+  const documentPath = documentPathFromUri(document.uri);
+  const documentText = document.getText();
+  const fields: ValidationFieldInfo[] = [];
+
+  if (documentPath) {
+    for (const ruleSet of index.validationRules.filter((rule) => rule.filePath === documentPath)) {
+      fields.push(...ruleSet.fields);
+    }
+  }
+
+  const requestClass = formRequestClassForDocument(documentText);
+  if (requestClass) {
+    for (const ruleSet of index.validationRules.filter((rule) => rule.className === requestClass)) {
+      fields.push(...ruleSet.fields);
+    }
+  }
+
+  if (fields.length === 0) {
+    for (const ruleSet of index.validationRules) {
+      fields.push(...ruleSet.fields);
+    }
+  }
+
+  return uniqueValidationFields(fields);
+}
+
+function formRequestClassForDocument(source: string): string | null {
+  const parameterMatch = /\b([A-Za-z_][A-Za-z0-9_]*)\s+\$request\b/.exec(source);
+  return parameterMatch?.[1] ?? null;
+}
+
+function uniqueValidationFields(fields: ValidationFieldInfo[]): ValidationFieldInfo[] {
+  const byName = new Map<string, ValidationFieldInfo>();
+
+  for (const field of fields) {
+    const existing = byName.get(field.field);
+    byName.set(field.field, {
+      field: field.field,
+      rules: existing ? uniqueStrings([...existing.rules, ...field.rules]) : field.rules,
+    });
+  }
+
+  return [...byName.values()].sort((left, right) => left.field.localeCompare(right.field));
+}
+
+function documentPathFromUri(uri: string): string | null {
+  try {
+    return fileURLToPath(uri);
+  } catch {
+    return null;
+  }
+}
+
+function isInsideModelAttributeArray(
+  document: TextDocument,
+  position: { line: number; character: number },
+): boolean {
+  const beforeCursor = document.getText({
+    start: { line: 0, character: 0 },
+    end: position,
+  });
+  const propertyStart = /\bprotected\s+\$(fillable|guarded|casts)\s*=\s*\[[\s\S]*$/;
+  const match = propertyStart.exec(beforeCursor);
+  return Boolean(match && !/\]\s*;\s*$/.test(match[0]));
+}
+
+function isInsideBladeViewDirectiveString(linePrefix: string): boolean {
+  return /@(extends|include|includeIf|includeWhen|includeUnless|includeFirst|each|component)\s*\(\s*['"][^'"]*$/.test(
+    linePrefix,
+  );
+}
+
+function bladeSectionLayoutForDocument(
+  document: TextDocument,
+  linePrefix: string,
+  index: LaravelIndex,
+): LaravelIndex["bladeViews"][number] | null {
+  if (!/@section\s*\(\s*['"][^'"]*$/.test(linePrefix)) {
+    return null;
+  }
+
+  const view = bladeViewForDocument(document, index);
+  if (!view?.extends) {
+    return null;
+  }
+
+  const layout = index.bladeViews.find((candidate) => candidate.name === view.extends);
+  return layout && layout.yields.length > 0 ? layout : null;
+}
+
+function bladeStackLayoutForDocument(
+  document: TextDocument,
+  linePrefix: string,
+  index: LaravelIndex,
+): LaravelIndex["bladeViews"][number] | null {
+  if (!/@(?:push|prepend)\s*\(\s*['"][^'"]*$/.test(linePrefix)) {
+    return null;
+  }
+
+  const view = bladeViewForDocument(document, index);
+  if (!view?.extends) {
+    return null;
+  }
+
+  const layout = index.bladeViews.find((candidate) => candidate.name === view.extends);
+  return layout && (layout.stacks?.length ?? 0) > 0 ? layout : null;
+}
+
+function bladeViewForDocument(document: TextDocument, index: LaravelIndex): LaravelIndex["bladeViews"][number] | null {
+  const documentPath = documentPathFromUri(document.uri);
+  return documentPath ? (index.bladeViews.find((view) => view.filePath === documentPath) ?? null) : null;
+}
+
+function isInsideValidationFieldCall(linePrefix: string): boolean {
+  return /->(validated|input)\(\s*['"][^'"]*$/.test(linePrefix) ||
+    /->safe\(\)->(only|except)\(\s*\[\s*['"][^'"]*$/.test(linePrefix) ||
+    /->(only|except)\(\s*\[\s*['"][^'"]*$/.test(linePrefix);
+}
+
+type ValidationSchemaCompletionContext =
+  | { kind: "table" }
+  | { kind: "column"; tableName: string };
+
+function validationSchemaContextForLine(linePrefix: string): ValidationSchemaCompletionContext | null {
+  const columnMatch = /\bRule::(?:exists|unique)\(\s*['"]([^'"]+)['"]\s*,\s*['"][^'"]*$/.exec(linePrefix);
+  if (columnMatch) {
+    return { kind: "column", tableName: columnMatch[1] };
+  }
+
+  return /\bRule::(?:exists|unique)\(\s*['"][^'"]*$/.test(linePrefix) ? { kind: "table" } : null;
+}
+
+function isInsideTranslationKeyString(linePrefix: string): boolean {
+  return /(__|trans|trans_choice)\(\s*['"][^'"]*$/.test(linePrefix) ||
+    /@(lang|choice)\s*\(\s*['"][^'"]*$/.test(linePrefix);
+}
+
+function isInsideAuthorizationAbilityString(linePrefix: string): boolean {
+  return /->(can|cannot|authorize)\(\s*['"][^'"]*$/.test(linePrefix) ||
+    /Gate::(allows|denies|authorize|check|any|none)\(\s*['"][^'"]*$/.test(linePrefix) ||
+    /@(can|cannot|canany)\s*\(\s*['"][^'"]*$/.test(linePrefix);
+}
+
+function isInsideContainerResolutionString(linePrefix: string): boolean {
+  return /\b(app|resolve)\(\s*['"][^'"]*$/.test(linePrefix) ||
+    /App::(make|bound|has)\(\s*['"][^'"]*$/.test(linePrefix);
+}
+
+function isInsideArtisanCommandString(linePrefix: string): boolean {
+  return /\bArtisan::(?:call|queue)\(\s*['"][^'"]*$/.test(linePrefix) ||
+    /(?:\$this|static|self)->(?:call|callSilent)\(\s*['"][^'"]*$/.test(linePrefix) ||
+    /\bSchedule::command\(\s*['"][^'"]*$/.test(linePrefix) ||
+    /->command\(\s*['"][^'"]*$/.test(linePrefix);
+}
+
+function isInsideMiddlewareString(linePrefix: string): boolean {
+  return /(?:Route::)?middleware\(\s*(?:\[\s*)?['"][^'"]*$/.test(linePrefix) ||
+    /->middleware\(\s*(?:\[\s*)?['"][^'"]*$/.test(linePrefix) ||
+    /(?:Route::)?withoutMiddleware\(\s*(?:\[\s*)?['"][^'"]*$/.test(linePrefix) ||
+    /->withoutMiddleware\(\s*(?:\[\s*)?['"][^'"]*$/.test(linePrefix);
+}
+
+function isInsideProviderClassArray(document: TextDocument, linePrefix: string): boolean {
+  const documentPath = documentPathFromUri(document.uri);
+  if (!documentPath || !isProviderRegistrationFile(documentPath)) {
+    return false;
+  }
+
+  return /(?:return\s*\[|['"]providers['"]\s*=>\s*\[)[^\]\n]*[A-Za-z_\\]*$/.test(linePrefix) ||
+    /(?:return\s*\[|['"]providers['"]\s*=>\s*\[)[^\]\n]*[A-Za-z_\\][A-Za-z0-9_\\]*::class\s*,\s*[A-Za-z_\\]*$/.test(linePrefix);
+}
+
+function isProviderRegistrationFile(filePath: string): boolean {
+  return filePath.endsWith("/bootstrap/providers.php") || filePath.endsWith("/config/app.php");
+}
+
+function routeParameterCompletionRouteName(linePrefix: string): string | null {
+  const match = /(?:\b(?:route|to_route)|->route)\(\s*(['"])([^'"]+)\1\s*,\s*\[([\s\S]*)$/.exec(linePrefix);
+  if (!match) {
+    return null;
+  }
+
+  const currentEntry = match[3].split(",").at(-1) ?? "";
+  if (!/['"][^'"]*$/.test(currentEntry) || /=>/.test(currentEntry)) {
+    return null;
+  }
+
+  return match[2];
+}
+
+function routeControllerActionClass(linePrefix: string): string | null {
+  return /Route::[A-Za-z]+\s*\([^;\n]*\[\s*([A-Za-z_\\][A-Za-z0-9_\\]*)::class\s*,\s*['"][^'"]*$/.exec(
+    linePrefix,
+  )?.[1] ?? null;
+}
+
+function routeControllerGroupActionClass(document: TextDocument, lineNumber: number, linePrefix: string): string | null {
+  if (!/Route::[A-Za-z]+\s*\([^;\n]*,\s*['"][^'"]*$/.test(linePrefix)) {
+    return null;
+  }
+
+  return activeRouteControllerGroupClass(document.getText().split(/\r?\n/).slice(0, lineNumber));
+}
+
+function activeRouteControllerGroupClass(lines: string[]): string | null {
+  const stack: Array<{ closeDepth: number; controller: string }> = [];
+  let braceDepth = 0;
+
+  for (const line of lines) {
+    const controller = routeControllerGroupController(line);
+    const nextBraceDepth = braceDepth + braceDelta(line);
+
+    if (controller) {
+      stack.push({
+        closeDepth: Math.max(nextBraceDepth, braceDepth + 1),
+        controller,
+      });
+    }
+
+    braceDepth = nextBraceDepth;
+    while (stack.length > 0 && braceDepth < stack[stack.length - 1].closeDepth) {
+      stack.pop();
+    }
+  }
+
+  return stack.at(-1)?.controller ?? null;
+}
+
+function routeControllerGroupController(line: string): string | null {
+  return /Route::controller\s*\(\s*([A-Za-z_\\][A-Za-z0-9_\\]*)::class\s*\)[^;]*->group\s*\(/.exec(line)?.[1] ?? null;
+}
+
+function braceDelta(line: string): number {
+  return [...line].reduce((delta, char) => delta + (char === "{" ? 1 : char === "}" ? -1 : 0), 0);
+}
+
+function isInsideRouteControllerClassContext(linePrefix: string): boolean {
+  return /Route::[A-Za-z]+\s*\([^;\n]*(?:,\s*)?\[\s*[A-Za-z_\\]*$/.test(linePrefix) ||
+    /Route::(?:resource|apiResource)\s*\([^;\n]*,\s*[A-Za-z_\\]*$/.test(linePrefix);
+}
+
+function controllerMatches(controller: LaravelIndex["controllers"][number], value: string): boolean {
+  return controller.className === value ||
+    controller.className === value.split("\\").at(-1) ||
+    (controller.namespace ? `${controller.namespace}\\${controller.className}` === value : false);
+}
+
+function eloquentRelationModel(linePrefix: string): string | null {
+  const relationMethods =
+    "(with|withOnly|without|withCount|withExists|withSum|withAvg|withMin|withMax|has|doesntHave|whereHas|orWhereHas|withWhereHas|whereDoesntHave|orWhereDoesntHave|load|loadMissing|loadCount|loadSum|loadAvg|loadMin|loadMax)";
+  const directStatic = new RegExp(
+    `\\b([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)::${relationMethods}\\(\\s*(?:\\[\\s*)?['\"][^'\"]*$`,
+  ).exec(linePrefix);
+  if (directStatic) {
+    return directStatic[1];
+  }
+
+  return new RegExp(
+    `\\b([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)::[^;\\n]*->${relationMethods}\\(\\s*(?:\\[\\s*)?['\"][^'\"]*$`,
+  ).exec(linePrefix)?.[1] ?? null;
+}
+
+function macroStaticCallClass(linePrefix: string): string | null {
+  return /\b([A-Za-z_\\][A-Za-z0-9_\\]*)::[A-Za-z_][A-Za-z0-9_]*$/.exec(linePrefix)?.[1] ?? null;
+}
+
+function factoryStateModel(linePrefix: string): string | null {
+  return /\b([A-Za-z_\\][A-Za-z0-9_\\]*)::factory\(\)->[A-Za-z_][A-Za-z0-9_]*$/.exec(
+    linePrefix,
+  )?.[1] ?? null;
+}
+
+function eloquentScopeModel(linePrefix: string): string | null {
+  return (
+    /\b([A-Za-z_\\][A-Za-z0-9_\\]*)::[A-Za-z_][A-Za-z0-9_]*$/.exec(linePrefix)?.[1] ??
+    /\b([A-Za-z_\\][A-Za-z0-9_\\]*)::[A-Za-z_][A-Za-z0-9_]*\([^)]*\)(?:->[A-Za-z_][A-Za-z0-9_]*\([^)]*\))*->[A-Za-z_][A-Za-z0-9_]*$/.exec(
+      linePrefix,
+    )?.[1] ??
+    null
+  );
+}
+
+function isInsideSeederCallArray(linePrefix: string): boolean {
+  return /->call\(\s*\[\s*[A-Za-z_\\]*$/.test(linePrefix);
+}
+
+function artifactContextKinds(linePrefix: string): LaravelIndex["artifacts"][number]["kind"][] | null {
+  if (/\bevent\s*\(\s*new\s+[A-Za-z_\\]*$/.test(linePrefix)) {
+    return ["event"];
+  }
+  if (
+    /\bdispatch\s*\(\s*new\s+[A-Za-z_\\]*$/.test(linePrefix) ||
+    /::dispatch\s*\(\s*[A-Za-z_\\]*$/.test(linePrefix)
+  ) {
+    return ["job"];
+  }
+  if (/->(?:send|queue|later)\s*\(\s*new\s+[A-Za-z_\\]*$/.test(linePrefix)) {
+    return ["mailable", "notification"];
+  }
+
+  return null;
+}
+
+function bladeComponentTagContext(
+  linePrefix: string,
+): "tag" | { kind: "props"; name: string } | null {
+  if (/<x-[A-Za-z0-9_.:-]*$/.test(linePrefix)) {
+    return "tag";
+  }
+
+  const propsMatch = /<x-([A-Za-z0-9_.:-]+)\s+[^>]*$/.exec(linePrefix);
+  return propsMatch ? { kind: "props", name: propsMatch[1].replace(/:/g, ".") } : null;
+}
+
 function isInsideStringCall(linePrefix: string, helper: string): boolean {
   return new RegExp(`\\b${helper}\\(\\s*['\"][^'\"]*$`).test(linePrefix);
+}
+
+function isInsideRouteNameString(linePrefix: string): boolean {
+  return /(?:\b(?:route|to_route)|->route)\(\s*['"][^'"]*$/.test(linePrefix) ||
+    /\bRoute::(?:has|is)\(\s*['"][^'"]*$/.test(linePrefix) ||
+    /->routeIs\(\s*['"][^'"]*$/.test(linePrefix);
 }
 
 function helperCompletions(): CompletionItem[] {
@@ -84,4 +812,8 @@ function helper(label: string, insertText: string, detail: string): CompletionIt
     insertText,
     insertTextFormat: InsertTextFormat.Snippet,
   };
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)].sort((left, right) => left.localeCompare(right));
 }
