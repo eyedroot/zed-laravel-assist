@@ -7,6 +7,7 @@ import {
   TextEdit,
   TextDocumentEdit,
 } from "vscode-languageserver/node.js";
+import { TextDocument } from "vscode-languageserver-textdocument";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { LaravelDiagnosticData } from "./diagnostics.js";
@@ -19,10 +20,16 @@ export function codeActionsForDiagnostics(
   params: CodeActionParams,
   index: LaravelIndex,
   workspaceRoot: string | null = null,
+  document?: TextDocument,
 ): CodeAction[] {
   const actions: CodeAction[] = [];
 
   for (const diagnostic of params.context.diagnostics) {
+    const authUserAction = authUserTypeNarrowingAction(params, diagnostic, document);
+    if (authUserAction) {
+      actions.push(authUserAction);
+    }
+
     const data = laravelDiagnosticData(diagnostic);
     if (!data) {
       continue;
@@ -50,6 +57,69 @@ export function codeActionsForDiagnostics(
   actions.push(...modelGenerationActions(params, index, workspaceRoot));
 
   return actions;
+}
+
+function authUserTypeNarrowingAction(
+  params: CodeActionParams,
+  diagnostic: Diagnostic,
+  document?: TextDocument,
+): CodeAction | null {
+  if (!document || diagnostic.source !== "intelephense" || String(diagnostic.code ?? "") !== "P1006") {
+    return null;
+  }
+
+  const expectedType = /Expected type '([^']+)'/.exec(diagnostic.message)?.[1];
+  if (!expectedType || !/Found 'Illuminate\\Contracts\\Auth\\Authenticatable\|null'/.test(diagnostic.message)) {
+    return null;
+  }
+
+  const line = document.getText({
+    start: { character: 0, line: diagnostic.range.start.line },
+    end: { character: Number.MAX_SAFE_INTEGER, line: diagnostic.range.start.line },
+  });
+  const authCall = authUserCallRange(line, diagnostic.range.start.character);
+  if (!authCall) {
+    return null;
+  }
+
+  const indent = /^\s*/.exec(line)?.[0] ?? "";
+  const variable = "$authenticatedUser";
+  const type = expectedType.startsWith("\\") ? expectedType : `\\${expectedType}`;
+
+  return {
+    diagnostics: [diagnostic],
+    edit: {
+      changes: {
+        [params.textDocument.uri]: [
+          TextEdit.insert(
+            { character: 0, line: diagnostic.range.start.line },
+            `${indent}/** @var ${type} ${variable} */\n${indent}${variable} = Auth::user();\n`,
+          ),
+          TextEdit.replace(
+            {
+              end: { character: authCall.end, line: diagnostic.range.start.line },
+              start: { character: authCall.start, line: diagnostic.range.start.line },
+            },
+            variable,
+          ),
+        ],
+      },
+    },
+    kind: CodeActionKind.QuickFix,
+    title: `Type-narrow Auth::user() as ${expectedType}`,
+  };
+}
+
+function authUserCallRange(line: string, preferredCharacter: number): { end: number; start: number } | null {
+  const ranges = [...line.matchAll(/\bAuth::user\(\)/g)].map((match) => ({
+    end: (match.index ?? 0) + match[0].length,
+    start: match.index ?? 0,
+  }));
+  if (ranges.length === 0) {
+    return null;
+  }
+
+  return ranges.find((range) => preferredCharacter >= range.start && preferredCharacter <= range.end) ?? ranges[0];
 }
 
 function laravelDiagnosticData(diagnostic: Diagnostic): LaravelDiagnosticData | null {
@@ -176,6 +246,10 @@ function allCandidates(data: LaravelDiagnosticData, index: LaravelIndex): string
       return uniqueSorted(index.validationRules.flatMap((ruleSet) => ruleSet.fields.map((field) => field.field)));
     case "view":
       return index.bladeViews.map((view) => view.name);
+    case "policyConvention":
+    case "requestConvention":
+    case "resourceConvention":
+      return [];
   }
 }
 

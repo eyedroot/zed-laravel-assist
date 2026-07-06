@@ -24,3 +24,20 @@ jobs:
         working-directory: server
       - run: npm run build
         working-directory: server
+
+  extension:
+    name: Zed extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+        working-directory: server
+      - run: npm run build
+        working-directory: server
+      - run: rustup target add wasm32-wasip2
+      - run: cargo build --release --target wasm32-wasip2

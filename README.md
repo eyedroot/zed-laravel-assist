@@ -13,11 +13,11 @@ Current scope:
 - Zed extension manifest and Rust entrypoint
 - Node-based Laravel-aware Language Server
 - Workspace detection for Laravel projects
-- Early completions for `route()`, `to_route()`, redirect route helpers, route parameter arrays, `view()`, Blade sections/stacks, `config()`, `env()`, controllers, models, Eloquent scopes/custom builders, validation Rule schema tables/columns, service providers, and common Laravel helpers
+- Early completions for `route()`, `to_route()`, redirect route helpers, route parameter arrays, `view()`, Blade sections/stacks, `config()`, `env()`, controllers, models, model properties, Eloquent query columns/scopes/custom builders/builder methods, validation Rule schema tables/columns, service providers, facade aliases, application artifacts, and common Laravel helpers
 - Early go-to-definition support for named routes, route parameters, controller actions, Blade views/components/component props/sections/stacks, config/env keys, translations, authorization abilities, container bindings, Artisan commands, middleware aliases, service providers, Eloquent relations/scopes/custom builders, validated request fields, and validation Rule schema tables/columns
 - Early references support for named routes, route parameters, controller actions, Blade views/components/component props/sections/stacks, config/env keys, translations, authorization abilities, container bindings, Artisan commands, middleware aliases, service providers, Eloquent relations/scopes/custom builders, and validated request fields
 - Early document/workspace symbols for indexed Laravel routes, controllers/actions, views, components, config/env keys, models, schema, translations, commands, middleware, bindings, authorization, service providers, factories, seeders, Eloquent custom builders, and application artifacts
-- Early hover support for named routes, route parameters, controller actions, Blade views/components/component props/sections/stacks, config/env keys, translations, authorization abilities, container bindings, Artisan commands, middleware aliases, service providers, Eloquent relations/scopes/custom builders, validated request fields, and validation Rule schema tables/columns
+- Early hover support for named routes, route parameters, controller actions, Blade views/components/component props/sections/stacks, config/env keys, translations, authorization abilities, container bindings, Artisan commands, middleware aliases, service providers, facade aliases, application artifacts, model properties, Eloquent relations/scopes/custom builders, validated request fields, and validation Rule schema tables/columns
 - Early diagnostics for unresolved route, route parameter, controller action, view, component, component prop, Blade section/stack, config, env, translation, authorization, container, command, middleware, service provider, Eloquent relation/scope, factory state, seeder, validated request field, and validation Rule schema references
 - Early quick-fix and generation code actions for unresolved route, view, component, component prop, Blade section/stack, config, env, translation, authorization, container, command, middleware, factory state, seeder, validated request field, and validation Rule schema references, missing Blade view/component creation, and model-based factory/resource/policy/seeder/FormRequest creation
 - Project indexing for routes, controllers/actions, Blade views/components, Artisan commands, middleware aliases, service providers, config files, env keys, translations, service bindings, authorization, facades, macros, factories, seeders, Laravel application artifacts, model classes, migration schema, and validation rules
@@ -201,6 +201,8 @@ Patterns currently extracted:
 - Laravel 12+ attribute scopes from `#[Scope] protected function popular(...)`
 - custom Eloquent builder classes returned by `newEloquentBuilder(...)`
 - public methods on custom builder classes that extend `Builder`
+- classic `getXxxAttribute()` and Laravel `xxx(): Attribute` virtual accessors
+- `SoftDeletes` trait usage
 - relationship method names when a public method body calls one of:
   - `hasOne`
   - `hasMany`
@@ -223,10 +225,12 @@ The model index stores:
 - cast fields
 - relationship method names
 - relationship type and related model class when available
+- virtual accessor names
+- SoftDeletes usage
 - local scope names
 - custom builder class, source file, and public method names when available
 
-Model classes are exposed as completions after simple class-like contexts such as `new`, `extends`, and `implements`. Local scopes are exposed on model query calls such as `User::active()` and `User::query()->active()`, with hovers, go-to-definition, references, diagnostics, and replacement quick fixes resolving back to the model source. Custom builder methods returned from `newEloquentBuilder(...)` are exposed on the same query chains, with hovers, go-to-definition, references, diagnostics, and workspace symbols resolving to the builder source file. Relationship names are exposed in relation string calls such as `User::with('...')`, `User::query()->whereHas('...')`, `load('...')`, and `withCount('...')` when the model can be inferred from the call chain, with hovers, go-to-definition, references, diagnostics, and replacement quick fixes showing relation type and related model metadata. Model files also expose generation code actions for missing factories, JSON resources, policies, seeders, and Store/Update FormRequests, using indexed fillable/cast/schema fields to seed factory, resource, and validation rule stubs.
+Model classes are exposed as completions after simple class-like contexts such as `new`, `extends`, and `implements`. Model instance property access such as `$user->...` and `$this->...` inside model files can complete and hover schema-backed columns, relationship properties, `<relation>_count` values, and virtual accessors when the model can be inferred from local type hints or assignments. Local scopes are exposed on model query calls such as `User::active()` and `User::query()->active()`, with hovers, go-to-definition, references, diagnostics, and replacement quick fixes resolving back to the model source. Custom builder methods returned from `newEloquentBuilder(...)` are exposed on the same query chains, with hovers, go-to-definition, references, diagnostics, and workspace symbols resolving to the builder source file. Eloquent query chains such as `User::query()->...` also complete common builder methods, indexed builder macros, and SoftDeletes helpers when applicable, while column-string arguments such as `User::where('...')` and `User::query()->orderBy('...')` complete migration-derived columns. Relationship names are exposed in relation string calls such as `User::with('...')`, `User::query()->whereHas('...')`, `load('...')`, and `withCount('...')` when the model can be inferred from the call chain, with hovers, go-to-definition, references, diagnostics, and replacement quick fixes showing relation type and related model metadata. Model files also expose generation code actions for missing factories, JSON resources, policies, seeders, and Store/Update FormRequests, using indexed fillable/cast/schema fields to seed factory, resource, and validation rule stubs.
 
 Models, relationships, scopes, and custom builder methods are also exposed as document and workspace symbols so large applications can be navigated through Laravel concepts instead of only PHP filenames.
 
@@ -347,12 +351,15 @@ Service provider classes are exposed in provider arrays with completions. Known 
 Files scanned:
 
 - `app/Facades/**/*.php`
+- `config/app.php`
 - `app/**/*.php`
 
 Patterns currently extracted:
 
 - custom facade classes that extend `Facade`
 - `getFacadeAccessor()` return values
+- framework default root aliases such as `Auth`, `DB`, `Route`, `Schema`, and `View`
+- legacy `config/app.php` aliases
 - macro declarations such as `Str::macro('headlineSlug', ...)`
 - macro declarations on namespaced classes such as `App\Support\Money::macro('formatted', ...)`
 
@@ -361,6 +368,7 @@ The facade index stores:
 - class name
 - namespace
 - facade accessor
+- alias target class when available
 - matching service container binding when the accessor matches an indexed abstract key
 - source file path
 
@@ -370,7 +378,7 @@ The macro index stores:
 - macro method name
 - source file path
 
-Custom facades are exposed in class-like completion contexts and known static calls such as `Reports::...`, with hovers, go-to-definition, and references resolving back to the indexed facade file. When the facade accessor matches an indexed container binding, completions, hovers, and document symbols also show the binding lifetime, concrete implementation, and binding source. Macro methods are exposed on static calls such as `Str::...` when the macro target is known, with hovers, go-to-definition, and references resolving back to the indexed macro declaration file.
+Custom facades and root aliases such as `\Auth::...` are exposed in class-like completion contexts and known static calls such as `Reports::...`, with hovers, go-to-definition, and references resolving back to the indexed facade file, config alias, or framework facade class path. When the facade accessor matches an indexed container binding, completions, hovers, and document symbols also show the binding lifetime, concrete implementation, and binding source. Macro methods are exposed on static calls such as `Str::...` when the macro target is known, with hovers, go-to-definition, and references resolving back to the indexed macro declaration file.
 
 ### Factory and Seeder Parsing
 
@@ -466,6 +474,7 @@ Patterns currently extracted:
 
 - event, resource, job, listener, mailable, and notification class names
 - namespaces
+- constructor parameter signatures
 - listener `handle(Event $event)` parameter classes
 - related classes referenced through `new ClassName(...)`
 - dispatched classes referenced through `ClassName::dispatch(...)`
@@ -475,10 +484,11 @@ The artifact index stores:
 - class name
 - namespace
 - artifact kind
+- constructor signature when available
 - related classes
 - source file path
 
-Artifacts are exposed in class-like completion contexts. Event completions are also exposed in `event(new ...)`, job completions in dispatch contexts, and mailables/notifications in `send(new ...)`, `queue(new ...)`, and `later(new ...)` contexts. Known artifact class references in those contexts expose hovers, go-to-definition, and references back to indexed artifact files.
+Artifacts are exposed in class-like completion contexts. Event completions are also exposed in `event(new ...)`, events and jobs in static `::dispatch(...)` contexts, and mailables/notifications in `send(new ...)`, `queue(new ...)`, and `later(new ...)` contexts. Known artifact class references in those contexts expose hovers, go-to-definition, and references back to indexed artifact files, with constructor signatures shown in completion detail and hover when available.
 
 ### Helper Completions
 
@@ -526,7 +536,7 @@ Zed already supports PHP through PHP language servers such as Phpactor, Inteleph
 
 ## Local Development
 
-Install and build the language server:
+Install and build the language server bundle first:
 
 ```sh
 cd server
@@ -534,13 +544,23 @@ npm install
 npm run build
 ```
 
-When developing the Zed extension locally, the Rust extension currently launches:
+This produces a single-file bundle at `server/dist/index.cjs`. Published Zed builds do not embed this bundle into `extension.wasm`; the Rust extension downloads the matching GitHub release asset at runtime through `zed_extension_api::download_file`.
+
+At runtime the extension stores the downloaded bundle in its Zed work directory and launches it through Zed's bundled Node runtime:
 
 ```text
-server/dist/index.js --stdio
+<zed-work-dir>/laravel-assist-server-v0.0.1.cjs --stdio
 ```
 
-through Zed's bundled Node runtime.
+This is required because Zed extensions run in a WASI sandbox that can only access their own work directory, never the extension source checkout. After changing server code, rebuild the bundle and publish a matching release asset before expecting the registry extension to use it.
+
+For the repeatable local update flow, run:
+
+```sh
+./scripts/rebuild-dev-extension.sh
+```
+
+Release and registry-readiness checks are documented in [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
 
 ## Zed Settings
 
@@ -548,6 +568,10 @@ After installing the extension locally in Zed, enable the language server for PH
 
 ```json
 {
+  "inlay_hints": {
+    "enabled": true,
+    "show_type_hints": true
+  },
   "languages": {
     "PHP": {
       "language_servers": ["laravel-assist", "..."]
@@ -555,6 +579,8 @@ After installing the extension locally in Zed, enable the language server for PH
   }
 }
 ```
+
+Route URL inlay hints for `router.php` files are controlled by Zed's type inlay hint setting. If route URL hints do not appear next to `Route::get(...)`, `Route::post(...)`, or similar calls, make sure `show_type_hints` is set to `true`.
 
 Blade support will depend on the active Zed language name exposed by the Blade extension installed in the editor.
 

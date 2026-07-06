@@ -28,6 +28,11 @@ export function definitionsForDocument(
     return [Location.create(pathToFileURL(provider.classFilePath).toString(), startRange())];
   }
 
+  const controllerStringTargets = routeControllerStringTargetsAtPosition(document, position, index);
+  if (controllerStringTargets) {
+    return controllerStringTargets;
+  }
+
   const controllerAction = routeControllerActionContextAtPosition(document, position, index);
   if (controllerAction) {
     return [Location.create(pathToFileURL(controllerAction.controller.filePath).toString(), controllerActionRange(controllerAction.controller, controllerAction.action))];
@@ -156,9 +161,17 @@ export function definitionsForDocument(
   }
 
   if (context.kind === "middleware") {
+    // `auth:api` and `cp-grade:professional` carry parameters after the colon;
+    // the registered alias is only the part before it.
+    const alias = context.value.split(":")[0];
     return index.middleware
-      .filter((middleware) => middleware.alias === context.value)
-      .map((middleware) => Location.create(pathToFileURL(middleware.filePath).toString(), startRange()));
+      .filter((middleware) => middleware.alias === alias)
+      .map((middleware) =>
+        Location.create(pathToFileURL(middleware.filePath).toString(), {
+          end: middleware.range.end,
+          start: middleware.range.start,
+        }),
+      );
   }
 
   if (context.kind === "relation") {
@@ -354,6 +367,69 @@ function routeControllerClassContextAtPosition(
   return index.controllers.find((controller) =>
     controllerMatches(controller, resolvePhpClassReference(document.getText(), reference.value))
   ) ?? null;
+}
+
+// Handles the legacy string route action syntax `'WorkspaceController@store'`:
+// the class part navigates to the controller file, the method part navigates
+// to the action inside it.
+function routeControllerStringTargetsAtPosition(
+  document: TextDocument,
+  position: Position,
+  index: LaravelIndex,
+): Location[] | null {
+  const line = document.getText().split(/\r?\n/)[position.line] ?? "";
+  const token = quotedStringAtPosition(line, position.character);
+  if (!token || !token.value.includes("@")) {
+    return null;
+  }
+
+  const prefix = line.slice(0, token.start - 1);
+  if (!isRouteActionStringPrefix(prefix)) {
+    return null;
+  }
+
+  const [classReference, action] = token.value.split("@");
+  const controllers = index.controllers.filter((controller) =>
+    controllerReferenceMatches(controller, classReference),
+  );
+  if (controllers.length === 0) {
+    return null;
+  }
+
+  const cursorInAction = Boolean(action) && position.character > token.start + classReference.length;
+  if (cursorInAction) {
+    const withAction = controllers.filter((controller) => controller.actions.includes(action));
+    const targets = withAction.length > 0 ? withAction : controllers;
+    return targets.map((controller) =>
+      Location.create(pathToFileURL(controller.filePath).toString(), controllerActionRange(controller, action)),
+    );
+  }
+
+  return controllers.map((controller) =>
+    Location.create(pathToFileURL(controller.filePath).toString(), startRange()),
+  );
+}
+
+function isRouteActionStringPrefix(prefix: string): boolean {
+  return /(?:Route::|\$router->)(?:get|post|put|patch|delete|options|any|match|fallback)\s*\([^;\n]*,\s*$/.test(prefix) ||
+    /['"](?:uses|controller)['"]\s*=>\s*$/.test(prefix);
+}
+
+// Route action strings resolve relative to a group namespace the indexer does
+// not track, so match on trailing namespace segments instead.
+function controllerReferenceMatches(
+  controller: LaravelIndex["controllers"][number],
+  reference: string,
+): boolean {
+  const normalized = reference.replace(/\\\\/g, "\\").replace(/^\\+/, "");
+  if (!normalized) {
+    return false;
+  }
+
+  const fullClassName = controller.namespace
+    ? `${controller.namespace}\\${controller.className}`
+    : controller.className;
+  return fullClassName === normalized || fullClassName.endsWith(`\\${normalized}`);
 }
 
 function routeControllerActionContextAtPosition(
@@ -587,7 +663,7 @@ function artifactKindsForReference(
     return ["event"];
   }
   if (/\bdispatch\s*\(\s*new\s+$/.test(before) || /^::dispatch\s*\(/.test(after)) {
-    return ["job"];
+    return ["event", "job"];
   }
   if (/->(?:send|queue|later)\s*\(\s*new\s+$/.test(before)) {
     return ["mailable", "notification"];
@@ -912,12 +988,7 @@ function definitionKindForPrefix(prefix: string): DefinitionSimpleKind | null {
     return "command";
   }
 
-  if (
-    /(?:Route::)?middleware\s*\(\s*(?:\[\s*)?$/.test(prefix) ||
-    /->middleware\s*\(\s*(?:\[\s*)?$/.test(prefix) ||
-    /(?:Route::)?withoutMiddleware\s*\(\s*(?:\[\s*)?$/.test(prefix) ||
-    /->withoutMiddleware\s*\(\s*(?:\[\s*)?$/.test(prefix)
-  ) {
+  if (isMiddlewareStringPrefix(prefix)) {
     return "middleware";
   }
 
@@ -982,4 +1053,11 @@ function startRange(): Range {
     end: { character: 0, line: 0 },
     start: { character: 0, line: 0 },
   };
+}
+
+// Matches the string position inside `middleware(...)` / `withoutMiddleware(...)`
+// calls, including elements after the first in an inline array such as
+// `->middleware(['auth:api', 'ensure-selfsignup-completed'])`.
+function isMiddlewareStringPrefix(prefix: string): boolean {
+  return /(?:Route::|->)?\b(?:middleware|withoutMiddleware)\s*\(\s*(?:\[\s*(?:['"][^'"]*['"]\s*,\s*)*)?$/.test(prefix);
 }

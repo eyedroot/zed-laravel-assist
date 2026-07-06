@@ -34,4 +34,9 @@ This repository aims to bring the Laravel development experience in Zed closer t
 
 - After TypeScript server changes, run `npm run typecheck`, `npm test`, and `npm run build` when possible.
 - After Rust extension changes, run `cargo check` when a Rust toolchain is available.
+- When changes should be tested in Zed, rebuild the extension wasm, copy it to `extension.wasm`, and restart Zed so the updated bundled server is loaded. Preferred commands:
+  - `cargo build --release --target wasm32-wasip2`
+  - `cp target/wasm32-wasip2/release/laravel_assist_zed_extension.wasm extension.wasm`
+  - `osascript -e 'tell application id "dev.zed.Zed" to quit'`
+  - `open -a Zed`
 - Only perform external publishing, GitHub pushes, releases, or npm publishing when explicitly requested.

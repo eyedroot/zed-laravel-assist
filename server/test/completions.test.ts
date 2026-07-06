@@ -181,7 +181,7 @@ describe("Laravel completions", () => {
     expect(completionsForDocument(tableDocument, { line: 1, character: tableSource.split("\n")[1].length }, indexFixture)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          detail: "Schema table 2 columns",
+          detail: "Schema table 3 columns",
           label: "users",
         }),
       ]),
@@ -531,7 +531,7 @@ describe("Laravel completions", () => {
     expect(completionsForDocument(eventDocument, { line: 1, character: 10 }, indexFixture)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          detail: "Laravel event",
+          detail: "Laravel event __construct(Order $order)",
           label: "App\\Events\\OrderShipped",
         }),
       ]),
@@ -541,6 +541,10 @@ describe("Laravel completions", () => {
         expect.objectContaining({
           detail: "Laravel facade reports singleton binding DatabaseReportService",
           label: "App\\Facades\\Reports",
+        }),
+        expect.objectContaining({
+          detail: "Laravel facade auth Illuminate\\Support\\Facades\\Auth",
+          label: "Auth",
         }),
         expect.objectContaining({
           detail: "Laravel resource",
@@ -653,6 +657,89 @@ describe("Laravel completions", () => {
       ]),
     );
   });
+  it("completes model attributes, relations, and accessors after property access", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\n$user = User::query()->first();\n$user->",
+    );
+
+    const completions = completionsForDocument(document, { line: 2, character: 7 }, indexFixture);
+    const labels = completions.map((item) => item.label);
+    expect(labels).toEqual(expect.arrayContaining(["email", "team_id", "status", "full_name", "kind_name", "posts", "posts_count"]));
+    expect(completions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          detail: "users boolean cast: boolean",
+          label: "status",
+        }),
+        expect.objectContaining({
+          detail: "Accessor on User: string",
+          label: "full_name",
+        }),
+        expect.objectContaining({
+          detail: "Appended Eloquent attribute on User",
+          label: "kind_name",
+        }),
+      ]),
+    );
+  });
+
+  it("completes model attributes for type-hinted variables", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\nfunction show(User $member) {\n    $member->\n}",
+    );
+
+    const labels = completionsForDocument(document, { line: 2, character: 13 }, indexFixture).map(
+      (item) => item.label,
+    );
+    expect(labels).toContain("email");
+  });
+
+  it("completes schema columns inside Eloquent column arguments", () => {
+    const whereDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\nUser::where('",
+    );
+    const orderByDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\nUser::query()->latest()->orderBy('",
+    );
+
+    for (const [document, character] of [[whereDocument, 13], [orderByDocument, 34]] as const) {
+      const labels = completionsForDocument(document, { line: 1, character }, indexFixture).map(
+        (item) => item.label,
+      );
+      expect(labels).toEqual(expect.arrayContaining(["email", "team_id"]));
+      expect(labels).not.toContain("where");
+    }
+  });
+
+  it("completes builder methods, scopes, macros, and soft delete helpers in query chains", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\nUser::query()->",
+    );
+
+    const labels = completionsForDocument(document, { line: 1, character: 15 }, indexFixture).map(
+      (item) => item.label,
+    );
+    expect(labels).toEqual(
+      expect.arrayContaining(["where", "firstOrFail", "active", "popular", "popularForTenant", "whereLike", "withTrashed"]),
+    );
+    expect(labels).not.toContain("headlineSlug");
+  });
+
 });
 
 const indexFixture: LaravelIndex = {
@@ -748,12 +835,14 @@ const indexFixture: LaravelIndex = {
       alias: "subscribed",
       className: "EnsureUserIsSubscribed",
       filePath: "/app/bootstrap/app.php",
+      range: { end: { character: 10, line: 5 }, start: { character: 4, line: 5 } },
       source: "bootstrap",
     },
     {
       alias: "tenant",
       className: "ResolveTenant",
       filePath: "/app/app/Http/Kernel.php",
+      range: { end: { character: 10, line: 5 }, start: { character: 4, line: 5 } },
       source: "kernel",
     },
   ],
@@ -777,6 +866,7 @@ const indexFixture: LaravelIndex = {
   artifacts: [
     {
       className: "OrderShipped",
+      constructorSignature: "Order $order",
       filePath: "/app/app/Events/OrderShipped.php",
       kind: "event",
       namespace: "App\\Events",
@@ -813,6 +903,14 @@ const indexFixture: LaravelIndex = {
       filePath: "/app/app/Facades/Reports.php",
       namespace: "App\\Facades",
     },
+    {
+      accessor: "auth",
+      className: "Auth",
+      filePath: "/app/vendor/laravel/framework/src/Illuminate/Support/Facades/Auth.php",
+      namespace: null,
+      source: "builtIn",
+      target: "Illuminate\\Support\\Facades\\Auth",
+    },
   ],
   providers: [
     {
@@ -829,6 +927,11 @@ const indexFixture: LaravelIndex = {
       filePath: "/app/app/Providers/AppServiceProvider.php",
       method: "headlineSlug",
     },
+    {
+      className: "Builder",
+      filePath: "/app/app/Providers/AppServiceProvider.php",
+      method: "whereLike",
+    },
   ],
   seeders: [
     {
@@ -840,7 +943,22 @@ const indexFixture: LaravelIndex = {
   ],
   models: [
     {
-      casts: [],
+      accessorDetails: [
+        {
+          name: "full_name",
+          returnType: "string",
+          source: "classic",
+        },
+      ],
+      accessors: ["full_name"],
+      appends: ["kind_name"],
+      casts: ["status"],
+      castDetails: [
+        {
+          name: "status",
+          type: "boolean",
+        },
+      ],
       className: "User",
       customBuilder: {
         className: "UserBuilder",
@@ -854,6 +972,7 @@ const indexFixture: LaravelIndex = {
         namespace: "App\\Models\\Builders",
       },
       filePath: "/app/app/Models/User.php",
+      usesSoftDeletes: true,
       fillable: [],
       guarded: [],
       namespace: null,
@@ -902,6 +1021,13 @@ const indexFixture: LaravelIndex = {
           name: "team_id",
           tableName: "users",
           type: "foreignId",
+        },
+        {
+          filePath: "/app/database/migrations/create_users.php",
+          modifiers: [],
+          name: "status",
+          tableName: "users",
+          type: "boolean",
         },
       ],
       filePath: "/app/database/migrations/create_users.php",

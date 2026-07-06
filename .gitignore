@@ -1,5 +1,7 @@
 .DS_Store
 target/
+extension.wasm
+grammars/
 node_modules/
 dist/
 coverage/
@@ -9,3 +11,4 @@ coverage/
 .env.*
 !.env.example
 
+analysis/

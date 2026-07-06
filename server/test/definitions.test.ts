@@ -203,6 +203,10 @@ describe("Laravel definitions", () => {
       },
       {
         character: 22,
+        range: {
+          end: { character: 10, line: 5 },
+          start: { character: 4, line: 5 },
+        },
         source: "<?php\nRoute::middleware('auth.admin')",
         uri: "file:///app/bootstrap/app.php",
       },
@@ -223,7 +227,7 @@ describe("Laravel definitions", () => {
 
       expect(definitionsForDocument(document, { line: 1, character: testCase.character }, indexFixture)).toEqual([
         {
-          range: {
+          range: testCase.range ?? {
             end: { character: 0, line: 0 },
             start: { character: 0, line: 0 },
           },
@@ -451,6 +455,12 @@ describe("Laravel definitions", () => {
       1,
       "<?php\nSyncUsers::dispatch();",
     );
+    const eventDispatchDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/OrderController.php",
+      "php",
+      1,
+      "<?php\nOrderShipped::dispatch($order);",
+    );
 
     expect(definitionsForDocument(eventDocument, { line: 1, character: 12 }, indexFixture)).toEqual([
       {
@@ -470,6 +480,15 @@ describe("Laravel definitions", () => {
         uri: "file:///app/app/Jobs/SyncUsers.php",
       },
     ]);
+    expect(definitionsForDocument(eventDispatchDocument, { line: 1, character: 3 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/Events/OrderShipped.php",
+      },
+    ]);
   });
 
   it("resolves custom facade static call definitions", () => {
@@ -487,6 +506,25 @@ describe("Laravel definitions", () => {
           start: { character: 0, line: 0 },
         },
         uri: "file:///app/app/Facades/Reports.php",
+      },
+    ]);
+  });
+
+  it("resolves root facade alias definitions", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/ReportController.php",
+      "php",
+      1,
+      "<?php\n\\Auth::check();",
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 2 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/vendor/laravel/framework/src/Illuminate/Support/Facades/Auth.php",
       },
     ]);
   });
@@ -536,6 +574,74 @@ describe("Laravel definitions", () => {
         uri: "file:///app/app/Http/Controllers/UserController.php",
       },
     ]);
+  });
+
+  it("resolves legacy string route actions to the controller class and method", () => {
+    const document = TextDocument.create(
+      "file:///app/modules/Console/router.php",
+      "php",
+      1,
+      "<?php\nRoute::post('/', 'WorkspaceController@store');",
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 22 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/modules/Console/Controllers/Workspace/WorkspaceController.php",
+      },
+    ]);
+    expect(definitionsForDocument(document, { line: 1, character: 40 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 24, line: 12 },
+          start: { character: 19, line: 12 },
+        },
+        uri: "file:///app/modules/Console/Controllers/Workspace/WorkspaceController.php",
+      },
+    ]);
+  });
+
+  it("resolves namespaced legacy string route actions", () => {
+    const document = TextDocument.create(
+      "file:///app/modules/Console/router.php",
+      "php",
+      1,
+      "<?php\nRoute::post('/', 'Workspace\\\\WorkspaceController@store');",
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 30 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/modules/Console/Controllers/Workspace/WorkspaceController.php",
+      },
+    ]);
+  });
+
+  it("resolves middleware aliases with parameters and in later array elements", () => {
+    const document = TextDocument.create(
+      "file:///app/routes/web.php",
+      "php",
+      1,
+      "<?php\nRoute::middleware(['auth.admin:strict', 'auth.admin'])->group(function () {});",
+    );
+
+    const expected = [
+      {
+        range: {
+          end: { character: 10, line: 5 },
+          start: { character: 4, line: 5 },
+        },
+        uri: "file:///app/bootstrap/app.php",
+      },
+    ];
+    expect(definitionsForDocument(document, { line: 1, character: 25 }, indexFixture)).toEqual(expected);
+    expect(definitionsForDocument(document, { line: 1, character: 45 }, indexFixture)).toEqual(expected);
   });
 
   it("resolves route controller aliases", () => {
@@ -703,12 +809,28 @@ const indexFixture: LaravelIndex = {
       filePath: "/app/app/Http/Controllers/UserController.php",
       namespace: "App\\Http\\Controllers",
     },
+    {
+      actionDetails: [
+        {
+          name: "store",
+          range: {
+            end: { character: 24, line: 12 },
+            start: { character: 19, line: 12 },
+          },
+        },
+      ],
+      actions: ["index", "store"],
+      className: "WorkspaceController",
+      filePath: "/app/modules/Console/Controllers/Workspace/WorkspaceController.php",
+      namespace: "Modules\\Console\\Controllers\\Workspace",
+    },
   ],
   middleware: [
     {
       alias: "auth.admin",
       className: "App\\Http\\Middleware\\EnsureAdmin",
       filePath: "/app/bootstrap/app.php",
+      range: { end: { character: 10, line: 5 }, start: { character: 4, line: 5 } },
       source: "bootstrap",
     },
   ],
@@ -842,6 +964,14 @@ const indexFixture: LaravelIndex = {
       className: "Reports",
       filePath: "/app/app/Facades/Reports.php",
       namespace: "App\\Facades",
+    },
+    {
+      accessor: "auth",
+      className: "Auth",
+      filePath: "/app/vendor/laravel/framework/src/Illuminate/Support/Facades/Auth.php",
+      namespace: null,
+      source: "builtIn",
+      target: "Illuminate\\Support\\Facades\\Auth",
     },
   ],
   providers: [

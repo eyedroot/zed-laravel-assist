@@ -19,11 +19,15 @@ npm install
 npm run build
 ```
 
-정상 빌드되면 Zed 확장이 다음 서버 엔트리를 실행합니다.
+빌드 결과는 단일 번들 파일 `server/dist/index.cjs`입니다. 공개/registry용 확장 wasm은 이 번들을 직접 내장하지 않고, 런타임에 GitHub Release asset에서 `laravel-assist-server.cjs`를 다운로드합니다.
+
+Zed 확장은 실행 시점에 다운로드한 번들을 자신의 작업 디렉터리에 저장한 뒤 다음과 같이 실행합니다.
 
 ```text
-/Users/eyedroot/Github/zed-laravel-assist/server/dist/index.js --stdio
+<zed 확장 작업 디렉터리>/laravel-assist-server-v0.0.1.cjs --stdio
 ```
+
+Zed 확장은 WASI 격리 환경에서 동작해 자신의 작업 디렉터리만 접근할 수 있고 이 저장소 경로는 읽을 수 없기 때문에, registry 배포에서는 Zed Extension API의 다운로드 기능을 사용합니다.
 
 ## 3. Zed에 개발 확장 설치
 
@@ -97,14 +101,18 @@ $request->input('...')
 
 ## 7. 변경 후 다시 테스트할 때
 
-Language Server 코드를 수정한 뒤에는 다시 빌드합니다.
+Language Server 코드를 수정한 뒤에는 번들과 확장 wasm을 다시 빌드합니다.
 
 ```sh
-cd /Users/eyedroot/Github/zed-laravel-assist/server
-npm run build
+cd /Users/eyedroot/Github/zed-laravel-assist
+./scripts/rebuild-dev-extension.sh
 ```
 
-Zed에서 확장이 이전 빌드 결과를 계속 사용하는 것처럼 보이면 다음 순서로 재시도합니다.
+그다음 Zed Command Palette에서 `zed: reload extensions`를 실행합니다. 개발 확장이 아직 설치되지 않은 상태라면 `zed: install dev extension`을 실행해 저장소 루트를 선택합니다.
+
+주의: 현재 registry 호환 구조에서는 Language Server가 `src/lib.rs`에 지정된 GitHub Release asset URL에서 다운로드됩니다. Zed에서 unpublished 서버 변경을 테스트하려면 임시 prerelease asset을 올리거나, 테스트용 release URL로 바꾼 뒤 다시 빌드해야 합니다.
+
+Zed가 이전 빌드 결과를 계속 사용하는 것처럼 보이면 다음 순서로 재시도합니다.
 
 1. Zed Command Palette에서 `zed: reload extensions` 실행
 2. Laravel 프로젝트 창 다시 열기
@@ -120,8 +128,8 @@ zed: open log
 
 확장이 실행되지 않거나 language server가 시작되지 않으면 다음을 확인합니다.
 
-- `/Users/eyedroot/Github/zed-laravel-assist/server/dist/index.js`가 존재하는지
-- `cd /Users/eyedroot/Github/zed-laravel-assist/server && npm run build`가 성공하는지
+- `cd /Users/eyedroot/Github/zed-laravel-assist/server && npm run build`가 성공해 `server/dist/index.cjs`가 생성되는지
+- 서버 번들 생성 이후에 `zed: install dev extension`으로 확장을 다시 설치했는지
 - Zed Settings의 PHP `language_servers`에 `laravel-assist`가 들어 있는지
 - 테스트 프로젝트가 Laravel 프로젝트로 감지될 수 있는 구조인지
 

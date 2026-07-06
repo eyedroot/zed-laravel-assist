@@ -554,12 +554,7 @@ function referenceKindForPrefix(prefix: string): ReferenceStringKind | null {
     return "command";
   }
 
-  if (
-    /(?:Route::)?middleware\s*\(\s*(?:\[\s*)?$/.test(prefix) ||
-    /->middleware\s*\(\s*(?:\[\s*)?$/.test(prefix) ||
-    /(?:Route::)?withoutMiddleware\s*\(\s*(?:\[\s*)?$/.test(prefix) ||
-    /->withoutMiddleware\s*\(\s*(?:\[\s*)?$/.test(prefix)
-  ) {
+  if (isMiddlewareStringPrefix(prefix)) {
     return "middleware";
   }
 
@@ -1428,7 +1423,7 @@ function artifactKindsForReference(
     return ["event"];
   }
   if (/\bdispatch\s*\(\s*new\s+$/.test(before) || /^::dispatch\s*\(/.test(after)) {
-    return ["job"];
+    return ["event", "job"];
   }
   if (/->(?:send|queue|later)\s*\(\s*new\s+$/.test(before)) {
     return ["mailable", "notification"];
@@ -1762,4 +1757,11 @@ function uniqueLocations(locations: Location[]): Location[] {
   }
 
   return unique;
+}
+
+// Matches the string position inside `middleware(...)` / `withoutMiddleware(...)`
+// calls, including elements after the first in an inline array such as
+// `->middleware(['auth:api', 'ensure-selfsignup-completed'])`.
+function isMiddlewareStringPrefix(prefix: string): boolean {
+  return /(?:Route::|->)?\b(?:middleware|withoutMiddleware)\s*\(\s*(?:\[\s*(?:['"][^'"]*['"]\s*,\s*)*)?$/.test(prefix);
 }

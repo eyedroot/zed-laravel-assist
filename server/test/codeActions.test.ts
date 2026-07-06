@@ -1,9 +1,72 @@
 import { CodeActionParams, DiagnosticSeverity } from "vscode-languageserver/node.js";
+import { TextDocument } from "vscode-languageserver-textdocument";
 import { describe, expect, it } from "vitest";
 import { codeActionsForDiagnostics } from "../src/codeActions.js";
 import { emptyIndex, LaravelIndex } from "../src/projectIndex.js";
 
 describe("Laravel code actions", () => {
+  it("suggests a type-narrowing quick fix for Intelephense Auth::user() diagnostics", () => {
+    const document = TextDocument.create(
+      "file:///app/modules/Console/Controllers/Account/AccountController.php",
+      "php",
+      1,
+      "<?php\n        $this->accountService->updateSignedAt(Auth::user());\n",
+    );
+    const params: CodeActionParams = {
+      context: {
+        diagnostics: [
+          {
+            code: "P1006",
+            message:
+              "Expected type 'App\\Kollus\\Models\\User'. Found 'Illuminate\\Contracts\\Auth\\Authenticatable|null'.",
+            range: {
+              end: { character: 60, line: 1 },
+              start: { character: 48, line: 1 },
+            },
+            severity: DiagnosticSeverity.Error,
+            source: "intelephense",
+          },
+        ],
+      },
+      range: {
+        end: { character: 60, line: 1 },
+        start: { character: 48, line: 1 },
+      },
+      textDocument: {
+        uri: document.uri,
+      },
+    };
+
+    expect(codeActionsForDiagnostics(params, indexFixture, null, document)).toEqual([
+      {
+        diagnostics: [params.context.diagnostics[0]],
+        edit: {
+          changes: {
+            [document.uri]: [
+              {
+                newText:
+                  "        /** @var \\App\\Kollus\\Models\\User $authenticatedUser */\n        $authenticatedUser = Auth::user();\n",
+                range: {
+                  end: { character: 0, line: 1 },
+                  start: { character: 0, line: 1 },
+                },
+              },
+              {
+                newText: "$authenticatedUser",
+                range: {
+                  end: { character: 58, line: 1 },
+                  start: { character: 46, line: 1 },
+                },
+              },
+            ],
+          },
+        },
+        kind: "quickfix",
+        title: "Type-narrow Auth::user() as App\\Kollus\\Models\\User",
+      },
+    ]);
+  });
+
   it("suggests quick fixes for unresolved Laravel string diagnostics", () => {
     const params: CodeActionParams = {
       context: {

@@ -204,6 +204,89 @@ describe("project index extraction", () => {
     );
   });
 
+  it("applies mounted route file prefixes to route metadata", () => {
+    const source = `
+      Route::namespace('Auth')->group(function () {
+        Route::prefix('me')->group(function () {
+          Route::get('/', 'MeController');
+          Route::get('analytics-dashboard-url', 'MeController@analyticsDashboardUrl')->name('analytics_dashboard_url');
+        });
+      });
+    `;
+
+    expect(extractRouteInfo("/app/modules/Console/router.php", source, { uriPrefix: "api-console" })).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "'MeController'",
+          methods: ["GET"],
+          uri: "api-console/me",
+        }),
+        expect.objectContaining({
+          action: "'MeController@analyticsDashboardUrl'",
+          methods: ["GET"],
+          name: "analytics_dashboard_url",
+          uri: "api-console/me/analytics-dashboard-url",
+        }),
+      ]),
+    );
+  });
+
+  it("extracts config keys across PHP comments containing quotes and brackets", () => {
+    const source = `<?php
+
+      /**
+       * Shared defaults for the app's [core] services (web, cli).
+       */
+      return [
+        /*
+        |--------------------------------------------------------------------------
+        | Application Name
+        |--------------------------------------------------------------------------
+        |
+        | This value is the name of your application's "core", which you'll use
+        | when the framework needs to place it in [notifications, views].
+        |
+        */
+        'name' => env('APP_NAME', 'Laravel'),
+
+        // The server's region key, one of: kr, jp, us
+        'server_pop_region_key' => env('SERVER_POP_REGION_KEY', 'kr'), // trailing note (it's inline)
+        # legacy hash comment with 'quotes' and [brackets]
+        'push' => [
+          'protocol' => env('PUSH_PROTOCOL', 'https'), /* the domain's scheme */
+          'domain' => env('PUSH_DOMAIN'),
+        ],
+      ];
+    `;
+
+    expect(extractConfigKeys("/app/config/kollus.php", source)).toEqual([
+      "kollus.name",
+      "kollus.push",
+      "kollus.push.domain",
+      "kollus.push.protocol",
+      "kollus.server_pop_region_key",
+    ]);
+  });
+
+  it("anchors config parsing at the return statement", () => {
+    const source = `<?php
+
+      use App\\Support\\Region;
+
+      $regions = ['kr', 'jp'];
+
+      return [
+        'default_region' => $regions[0],
+        'name' => 'kollus',
+      ];
+    `;
+
+    expect(extractConfigKeys("/app/config/kollus.php", source)).toEqual([
+      "kollus.default_region",
+      "kollus.name",
+    ]);
+  });
+
   it("extracts environment keys", () => {
     expect(extractEnvKeys("APP_NAME=Laravel\n# ignored\nDB_HOST=127.0.0.1")).toEqual([
       "APP_NAME",
@@ -219,6 +302,66 @@ describe("project index extraction", () => {
     });
   });
 
+  it("extracts model accessors and soft delete usage", () => {
+    const source = `
+      namespace App\\Models;
+
+      /**
+       * @property-read int $login_count
+       */
+      class User extends Model
+      {
+          use HasFactory, SoftDeletes;
+
+          /**
+           * @property-read string $full_name
+           */
+          public function getFullNameAttribute(): string
+          {
+              return $this->first_name . ' ' . $this->last_name;
+          }
+
+          public function getLoginCountAttribute()
+          {
+              return 0;
+          }
+
+          /**
+           * @return string|null
+           */
+          protected function avatarUrl(): Attribute
+          {
+              return Attribute::make(get: fn () => '');
+          }
+      }
+    `;
+
+    const model = extractModelInfo("/app/app/Models/User.php", source);
+    expect(model?.accessors).toEqual(["avatar_url", "full_name", "login_count"]);
+    expect(model?.accessorDetails).toEqual([
+      {
+        name: "avatar_url",
+        returnType: "string|null",
+        source: "attribute",
+      },
+      {
+        name: "full_name",
+        returnType: "string",
+        source: "classic",
+      },
+      {
+        name: "login_count",
+        returnType: "int",
+        source: "classic",
+      },
+    ]);
+    expect(model?.usesSoftDeletes).toBe(true);
+
+    const plain = extractModelInfo("/app/app/Models/Post.php", "namespace App\\Models;\nclass Post extends Model {}");
+    expect(plain?.accessors).toBeUndefined();
+    expect(plain?.usesSoftDeletes).toBeUndefined();
+  });
+
   it("extracts Eloquent model metadata and relationships", () => {
     const source = `
       namespace App\\Models;
@@ -228,6 +371,21 @@ describe("project index extraction", () => {
           public function posts(): HasMany
           {
               return $this->hasMany(Post::class);
+          }
+
+          public function deployments(): HasManyThrough
+          {
+              return $this->hasManyThrough(Deployment::class, Environment::class);
+          }
+
+          public function owner(): HasOneThrough
+          {
+              return $this->hasOneThrough(Owner::class, Team::class);
+          }
+
+          public function tags(): MorphToMany
+          {
+              return $this->morphedByMany(Tag::class, 'taggable');
           }
 
           public function scopePopular($query): void
@@ -250,12 +408,27 @@ describe("project index extraction", () => {
       guarded: [],
       relations: [
         {
+          name: "deployments",
+          relatedModel: "Deployment",
+          type: "hasManyThrough",
+        },
+        {
+          name: "owner",
+          relatedModel: "Owner",
+          type: "hasOneThrough",
+        },
+        {
           name: "posts",
           relatedModel: "Post",
           type: "hasMany",
         },
+        {
+          name: "tags",
+          relatedModel: "Tag",
+          type: "morphedByMany",
+        },
       ],
-      relationships: ["posts"],
+      relationships: ["deployments", "owner", "posts", "tags"],
       scopes: ["active", "popular"],
       tableName: "users",
     });
@@ -319,12 +492,31 @@ describe("project index extraction", () => {
           protected $casts = [
               'published_at' => 'datetime',
           ];
+          protected $appends = ['kind_name'];
+
+          protected function casts(): array
+          {
+              return [
+                  'status' => 'boolean',
+              ];
+          }
       }
     `;
 
     expect(extractModelInfo("/app/app/Models/ProductCategory.php", source)).toEqual(
       expect.objectContaining({
-        casts: ["published_at"],
+        appends: ["kind_name"],
+        casts: ["published_at", "status"],
+        castDetails: [
+          {
+            name: "published_at",
+            type: "datetime",
+          },
+          {
+            name: "status",
+            type: "boolean",
+          },
+        ],
         fillable: ["name", "slug"],
         guarded: ["id"],
         tableName: "catalog_categories",
@@ -547,33 +739,69 @@ describe("project index extraction", () => {
     `;
 
     expect(extractMiddlewareInfo("/app/bootstrap/app.php", bootstrap)).toEqual([
-      {
+      expect.objectContaining({
         alias: "admin",
         className: "\\App\\Http\\Middleware\\EnsureAdmin",
         filePath: "/app/bootstrap/app.php",
         source: "bootstrap",
-      },
-      {
+      }),
+      expect.objectContaining({
         alias: "subscribed",
         className: "EnsureUserIsSubscribed",
         filePath: "/app/bootstrap/app.php",
+        range: {
+          end: { character: 25, line: 3 },
+          start: { character: 15, line: 3 },
+        },
         source: "bootstrap",
-      },
+      }),
     ]);
     expect(extractMiddlewareInfo("/app/app/Http/Kernel.php", kernel)).toEqual([
-      {
+      expect.objectContaining({
         alias: "role",
         className: "CheckRole",
         filePath: "/app/app/Http/Kernel.php",
+        range: {
+          end: { character: 19, line: 4 },
+          start: { character: 15, line: 4 },
+        },
         source: "kernel",
-      },
-      {
+      }),
+      expect.objectContaining({
         alias: "tenant",
         className: "ResolveTenant",
         filePath: "/app/app/Http/Kernel.php",
         source: "kernel",
-      },
+      }),
     ]);
+  });
+
+  it("extracts middleware group names as navigable aliases", () => {
+    const kernel = `
+      protected $middlewareGroups = [
+          'web' => [
+              \\App\\Http\\Middleware\\EncryptCookies::class,
+          ],
+          'api' => [
+              'throttle:api',
+          ],
+      ];
+    `;
+    const bootstrap = `
+      ->withMiddleware(function (Middleware $middleware): void {
+          $middleware->appendToGroup('reporting', [EnsureReportingEnabled::class]);
+      })
+    `;
+
+    const kernelEntries = extractMiddlewareInfo("/app/app/Http/Kernel.php", kernel);
+    expect(kernelEntries.map((entry) => entry.alias)).toEqual(["api", "web"]);
+    expect(kernelEntries[1]?.range).toEqual({
+      end: { character: 14, line: 2 },
+      start: { character: 11, line: 2 },
+    });
+
+    const bootstrapEntries = extractMiddlewareInfo("/app/bootstrap/app.php", bootstrap);
+    expect(bootstrapEntries.map((entry) => entry.alias)).toEqual(["reporting"]);
   });
 
   it("extracts gates and policy abilities", () => {
@@ -665,6 +893,16 @@ describe("project index extraction", () => {
           }
       }
     `;
+    const appConfig = `
+      <?php
+
+      return [
+          'aliases' => Facade::defaultAliases()->merge([
+              'Acl' => App\\Facades\\Acl::class,
+              'Auth' => Illuminate\\Support\\Facades\\Auth::class,
+          ])->toArray(),
+      ];
+    `;
 
     expect(extractFacadeInfo("/app/app/Facades/Reports.php", facade)).toEqual([
       {
@@ -685,6 +923,26 @@ describe("project index extraction", () => {
         className: "Str",
         filePath: "/app/app/Providers/AppServiceProvider.php",
         method: "headlineSlug",
+      },
+    ]);
+    expect(extractFacadeInfo("/app/config/app.php", appConfig)).toEqual([
+      {
+        accessor: null,
+        binding: null,
+        className: "Acl",
+        filePath: "/app/config/app.php",
+        namespace: null,
+        source: "alias",
+        target: "App\\Facades\\Acl",
+      },
+      {
+        accessor: "auth",
+        binding: null,
+        className: "Auth",
+        filePath: "/app/config/app.php",
+        namespace: null,
+        source: "alias",
+        target: "Illuminate\\Support\\Facades\\Auth",
       },
     ]);
   });
@@ -871,6 +1129,16 @@ describe("project index extraction", () => {
       {
       }
     `;
+    const job = `
+      namespace App\\Jobs;
+
+      class SyncUsers implements ShouldQueue
+      {
+          public function __construct(User $user, bool $force = false)
+          {
+          }
+      }
+    `;
 
     expect(extractLaravelArtifacts("/app", "/app/app/Listeners/SendShipmentNotification.php", listener)).toEqual([
       {
@@ -896,6 +1164,16 @@ describe("project index extraction", () => {
         filePath: "/app/app/Mail/OrderReceipt.php",
         kind: "mailable",
         namespace: "App\\Mail",
+        related: [],
+      },
+    ]);
+    expect(extractLaravelArtifacts("/app", "/app/app/Jobs/SyncUsers.php", job)).toEqual([
+      {
+        className: "SyncUsers",
+        constructorSignature: "User $user, bool $force = false",
+        filePath: "/app/app/Jobs/SyncUsers.php",
+        kind: "job",
+        namespace: "App\\Jobs",
         related: [],
       },
     ]);
@@ -1097,8 +1375,10 @@ describe("project index extraction", () => {
         "publish-posts",
         "update",
       ]);
-      expect(first.index.facades.map((facade) => facade.className)).toEqual(["Reports"]);
-      expect(first.index.facades[0]?.binding).toEqual({
+      expect(first.index.facades.map((facade) => facade.className)).toEqual(
+        expect.arrayContaining(["Auth", "DB", "Reports", "Route"]),
+      );
+      expect(first.index.facades.find((facade) => facade.className === "Reports")?.binding).toEqual({
         abstract: "reports",
         concrete: "DatabaseReportService",
         filePath: path.join(rootPath, "app", "Providers", "AuthServiceProvider.php"),
@@ -1199,6 +1479,8 @@ describe("project index extraction", () => {
       "model",
     );
     expect(indexFileKindForPath(rootPath, "/app/routes/console.php")).toBe("route");
+    expect(indexFileKindForPath(rootPath, "/app/modules/Console/router.php")).toBe("route");
+    expect(indexFileKindForPath(rootPath, "/app/packages/Billing/router.php")).toBe("route");
     expect(indexFileKindForPath(rootPath, "/app/bootstrap/app.php")).toBe("middleware");
     expect(indexFileKindForPath(rootPath, "/app/app/Http/Kernel.php")).toBe("model");
     expect(indexFileKindForPath(rootPath, "/app/app/Http/Requests/StoreUserRequest.php")).toBe(

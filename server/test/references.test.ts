@@ -906,6 +906,7 @@ describe("Laravel references", () => {
           alias: "auth.admin",
           className: "App\\Http\\Middleware\\EnsureAdmin",
           filePath: bootstrapPath,
+          range: { end: { character: 10, line: 5 }, start: { character: 4, line: 5 } },
           source: "bootstrap",
         },
       ],

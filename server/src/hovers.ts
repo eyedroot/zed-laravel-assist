@@ -71,6 +71,8 @@ export function hoverForDocument(
   if (facadeContext) {
     return markdownHover([
       `**Laravel facade** \`${facadeName(facadeContext.facade)}\``,
+      facadeContext.facade.source ? `- Source: \`${facadeContext.facade.source}\`` : "",
+      facadeContext.facade.target ? `- Target: \`${facadeContext.facade.target}\`` : "",
       facadeContext.facade.accessor ? `- Accessor: \`${facadeContext.facade.accessor}\`` : "",
       facadeContext.facade.binding ? `- Binding: \`${facadeContext.facade.binding.lifetime} ${facadeContext.facade.binding.abstract}\`` : "",
       facadeContext.facade.binding?.concrete ? `- Concrete: \`${facadeContext.facade.binding.concrete}\`` : "",
@@ -83,6 +85,9 @@ export function hoverForDocument(
   if (artifactContext) {
     return markdownHover([
       `**Laravel ${artifactContext.artifact.kind}** \`${artifactName(artifactContext.artifact)}\``,
+      artifactContext.artifact.constructorSignature
+        ? `- Constructor: \`__construct(${artifactContext.artifact.constructorSignature})\``
+        : "",
       artifactContext.artifact.related.length > 0 ? `- Related: \`${artifactContext.artifact.related.join(", ")}\`` : "",
       `- File: \`${artifactContext.artifact.filePath}\``,
     ]);
@@ -113,6 +118,11 @@ export function hoverForDocument(
       `- Factory: \`${factoryState.factory.className}\``,
       `- File: \`${factoryState.factory.filePath}\``,
     ]);
+  }
+
+  const modelProperty = modelPropertyContextAtPosition(document, position, index);
+  if (modelProperty) {
+    return markdownHover(modelPropertyHoverLines(modelProperty.model, modelProperty.property, index));
   }
 
   const eloquentMethod = eloquentMethodContextAtPosition(document, position, index);
@@ -289,7 +299,7 @@ export function hoverForDocument(
   }
 
   if (context.kind === "middleware") {
-    const middleware = index.middleware.find((candidate) => candidate.alias === context.value);
+    const middleware = index.middleware.find((candidate) => candidate.alias === context.value.split(":")[0]);
     if (!middleware) {
       return null;
     }
@@ -716,6 +726,126 @@ function factoryStateContextAtPosition(
   return factory ? { factory, model: modelName, state: token.value } : null;
 }
 
+// Hover on `$model->property` where the property is a schema column, an
+// accessor, a relation, or a `<relation>_count` virtual attribute.
+function modelPropertyContextAtPosition(
+  document: TextDocument,
+  position: Position,
+  index: LaravelIndex,
+): { model: LaravelIndex["models"][number]; property: string } | null {
+  const line = document.getText().split(/\r?\n/)[position.line] ?? "";
+  const token = tokenAtPosition(line, position.character);
+  if (!token || !line.slice(0, token.start).endsWith("->")) {
+    return null;
+  }
+
+  const access = /(\$[A-Za-z_][A-Za-z0-9_]*)->$/.exec(line.slice(0, token.start));
+  if (!access) {
+    return null;
+  }
+
+  let model: LaravelIndex["models"][number] | null = null;
+  if (access[1] === "$this") {
+    const documentPath = documentPathFromUri(document.uri);
+    model = index.models.find((candidate) => candidate.filePath === documentPath) ?? null;
+  } else {
+    const documentText = document.getText();
+    const className = modelClassForVariable(documentText, access[1]);
+    const resolved = className ? resolvePhpClassReference(documentText, className) : null;
+    model = resolved
+      ? index.models.find(
+          (candidate) => candidate.className === resolved || `${candidate.namespace}\\${candidate.className}` === resolved,
+        ) ?? null
+      : null;
+  }
+
+  if (!model || !isKnownModelProperty(model, token.value, index)) {
+    return null;
+  }
+
+  return { model, property: token.value };
+}
+
+function modelClassForVariable(source: string, variable: string): string | null {
+  const escapedName = variable.slice(1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const assignment = new RegExp(
+    `\\$${escapedName}\\s*=\\s*(?:new\\s+)?([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)\\s*(?:::|\\()`,
+  ).exec(source);
+  if (assignment) {
+    return assignment[1];
+  }
+
+  return new RegExp(`([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)\\s+\\$${escapedName}\\b`).exec(source)?.[1] ?? null;
+}
+
+function isKnownModelProperty(
+  model: LaravelIndex["models"][number],
+  property: string,
+  index: LaravelIndex,
+): boolean {
+  const table = index.schemaTables.find((candidate) => candidate.name === model.tableName);
+  return Boolean(
+    table?.columns.some((column) => column.name === property) ||
+      model.accessors?.includes(property) ||
+      model.appends?.includes(property) ||
+      model.relations.some((relation) => relation.name === property || `${relation.name}_count` === property),
+  );
+}
+
+function modelPropertyHoverLines(
+  model: LaravelIndex["models"][number],
+  property: string,
+  index: LaravelIndex,
+): string[] {
+  const relation = model.relations.find((candidate) => candidate.name === property);
+  if (relation) {
+    return [
+      `**Eloquent relation** \`${model.className}.${property}\``,
+      `- Type: \`${relation.type}\``,
+      relation.relatedModel ? `- Related: \`${relation.relatedModel}\`` : "",
+      `- File: \`${model.filePath}\``,
+    ];
+  }
+
+  const countRelation = model.relations.find((candidate) => `${candidate.name}_count` === property);
+  if (countRelation) {
+    return [
+      `**Relation count** \`${model.className}.${property}\``,
+      `- Counts: \`${countRelation.name}\` (available via \`withCount\`)`,
+      `- File: \`${model.filePath}\``,
+    ];
+  }
+
+  if (model.accessors?.includes(property)) {
+    const accessor = model.accessorDetails?.find((candidate) => candidate.name === property);
+    return [
+      `**Model accessor** \`${model.className}.${property}\``,
+      accessor ? `- Source: \`${accessor.source === "attribute" ? "Attribute object" : "classic accessor"}\`` : "",
+      accessor?.returnType ? `- Returns: \`${accessor.returnType}\`` : "",
+      `- File: \`${model.filePath}\``,
+    ];
+  }
+
+  if (model.appends?.includes(property)) {
+    return [
+      `**Appended model attribute** \`${model.className}.${property}\``,
+      "- Declared in: `$appends`",
+      `- File: \`${model.filePath}\``,
+    ];
+  }
+
+  const table = index.schemaTables.find((candidate) => candidate.name === model.tableName);
+  const column = table?.columns.find((candidate) => candidate.name === property);
+  const cast = model.castDetails?.find((candidate) => candidate.name === property);
+  return [
+    `**Model attribute** \`${model.className}.${property}\``,
+    column?.type ? `- Column type: \`${column.type}\`` : "",
+    cast ? `- Cast: \`${cast.type}\`` : "",
+    `- Table: \`${model.tableName}\``,
+    column ? `- Migration: \`${column.filePath}\`` : "",
+  ];
+}
+
 function tokenAtPosition(line: string, character: number): { start: number; value: string } | null {
   for (const match of line.matchAll(/[A-Za-z_][A-Za-z0-9_]*/g)) {
     const start = match.index ?? 0;
@@ -776,7 +906,7 @@ function artifactKindsForReference(
     return ["event"];
   }
   if (/\bdispatch\s*\(\s*new\s+$/.test(before) || /^::dispatch\s*\(/.test(after)) {
-    return ["job"];
+    return ["event", "job"];
   }
   if (/->(?:send|queue|later)\s*\(\s*new\s+$/.test(before)) {
     return ["mailable", "notification"];
@@ -1115,12 +1245,7 @@ function hoverKindForPrefix(prefix: string): HoverSimpleKind | null {
   ) {
     return "command";
   }
-  if (
-    /(?:Route::)?middleware\s*\(\s*(?:\[\s*)?$/.test(prefix) ||
-    /->middleware\s*\(\s*(?:\[\s*)?$/.test(prefix) ||
-    /(?:Route::)?withoutMiddleware\s*\(\s*(?:\[\s*)?$/.test(prefix) ||
-    /->withoutMiddleware\s*\(\s*(?:\[\s*)?$/.test(prefix)
-  ) {
+  if (isMiddlewareStringPrefix(prefix)) {
     return "middleware";
   }
 
@@ -1175,4 +1300,11 @@ function markdownHover(lines: string[]): Hover {
       value: lines.filter(Boolean).join("\n"),
     },
   };
+}
+
+// Matches the string position inside `middleware(...)` / `withoutMiddleware(...)`
+// calls, including elements after the first in an inline array such as
+// `->middleware(['auth:api', 'ensure-selfsignup-completed'])`.
+function isMiddlewareStringPrefix(prefix: string): boolean {
+  return /(?:Route::|->)?\b(?:middleware|withoutMiddleware)\s*\(\s*(?:\[\s*(?:['"][^'"]*['"]\s*,\s*)*)?$/.test(prefix);
 }

@@ -113,6 +113,11 @@ export function completionsForDocument(
       }));
   }
 
+  const propertyModel = modelPropertyContext(document, line, index);
+  if (propertyModel) {
+    return modelPropertyCompletions(propertyModel, index);
+  }
+
   const relationModel = eloquentRelationModel(line);
   if (relationModel) {
     const relationCompletions = index.models
@@ -159,21 +164,25 @@ export function completionsForDocument(
       );
   }
 
-  const scopeModel = eloquentScopeModel(line);
+  const columnModel = eloquentColumnContextModel(line);
+  if (columnModel) {
+    const model = findModelByReference(document, columnModel, index);
+    const table = model ? index.schemaTables.find((candidate) => candidate.name === model.tableName) : null;
+    if (table) {
+      return table.columns.map((column) => ({
+        label: column.name,
+        kind: CompletionItemKind.Field,
+        detail: schemaColumnDetail(column),
+        data: { filePath: column.filePath, tableName: column.tableName },
+      }));
+    }
+  }
+
+  const scopeModel = eloquentScopeModel(line) ?? eloquentBuilderChainModel(line);
   if (scopeModel) {
     const modelCompletions = index.models
       .filter((model) => model.className === scopeModel || `${model.namespace}\\${model.className}` === scopeModel)
-      .flatMap((model) =>
-        [
-          ...model.scopes.map((scope) => ({
-            label: scope,
-            kind: CompletionItemKind.Method,
-            detail: `Eloquent scope ${model.className}`,
-            data: { filePath: model.filePath, model: model.className },
-          })),
-          ...customBuilderMethodCompletions(model),
-        ],
-      );
+      .flatMap((model) => builderChainCompletions(model, index));
     if (modelCompletions.length > 0) {
       return modelCompletions;
     }
@@ -406,6 +415,7 @@ function facadeDetail(facade: LaravelIndex["facades"][number]): string {
     facade.accessor,
     facade.binding ? `${facade.binding.lifetime} binding` : "",
     facade.binding?.concrete,
+    facade.target,
   ].filter(Boolean).join(" ");
 }
 
@@ -446,9 +456,239 @@ function customBuilderMethodCompletions(model: LaravelIndex["models"][number]): 
 }
 
 function laravelArtifactDetail(artifact: LaravelIndex["artifacts"][number]): string {
-  return [`Laravel ${artifact.kind}`, artifact.related.length > 0 ? artifact.related.join(", ") : ""]
+  return [
+    `Laravel ${artifact.kind}`,
+    artifact.constructorSignature ? `__construct(${artifact.constructorSignature})` : "",
+    artifact.related.length > 0 ? artifact.related.join(", ") : "",
+  ]
     .filter(Boolean)
     .join(" ");
+}
+
+// Curated from Laravel Idea's `_BaseBuilder`/`_IH_*_QB` stubs: the Eloquent
+// builder surface worth completing in a `Model::query()->` chain.
+const ELOQUENT_BUILDER_METHODS = [
+  "addSelect", "avg", "chunk", "chunkById", "count", "create", "cursor", "dd",
+  "delete", "distinct", "doesntExist", "doesntHave", "dump", "each", "exists",
+  "find", "findMany", "findOrFail", "findOrNew", "first", "firstOr",
+  "firstOrCreate", "firstOrFail", "firstOrNew", "firstWhere", "forceCreate",
+  "forceDelete", "get", "groupBy", "has", "having", "inRandomOrder", "join",
+  "latest", "lazy", "lazyById", "leftJoin", "limit", "lockForUpdate", "max",
+  "min", "offset", "oldest", "orWhere", "orWhereHas", "orWhereIn", "orderBy",
+  "orderByDesc", "paginate", "pluck", "select", "sharedLock", "simplePaginate",
+  "skip", "sole", "sum", "take", "tap", "toSql", "unless", "update",
+  "updateOrCreate", "value", "when", "where", "whereBetween", "whereDate",
+  "whereDoesntHave", "whereHas", "whereIn", "whereNot", "whereNotIn",
+  "whereNotNull", "whereNull", "with", "withCount", "withSum",
+];
+
+const SOFT_DELETE_BUILDER_METHODS = ["onlyTrashed", "restore", "withTrashed", "withoutTrashed"];
+
+// Column-string argument position in an Eloquent chain that names its model:
+// `User::where('<cursor>`, `User::query()->orderBy('<cursor>`, ...
+function eloquentColumnContextModel(linePrefix: string): string | null {
+  const columnMethods =
+    "(?:where|orWhere|whereIn|orWhereIn|whereNotIn|whereNull|whereNotNull|whereBetween|whereDate|whereNot|firstWhere|orderBy|orderByDesc|latest|oldest|value|pluck|select|addSelect|groupBy|min|max|sum|avg)";
+  const match = new RegExp(
+    `\\b([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)::[^;\\n]*?\\b${columnMethods}\\s*\\(\\s*(?:\\[\\s*)?['"][A-Za-z0-9_]*$`,
+  ).exec(linePrefix);
+  return match?.[1] ?? null;
+}
+
+// Method position in an Eloquent chain: `User::query()-><cursor>` or
+// `User::where(...)->orderBy(...)-><cursor>`.
+function eloquentBuilderChainModel(linePrefix: string): string | null {
+  return /\b([A-Za-z_\\][A-Za-z0-9_\\]*)::[^;\n]*->\s*[A-Za-z0-9_]*$/.exec(linePrefix)?.[1] ?? null;
+}
+
+function findModelByReference(
+  document: TextDocument,
+  reference: string,
+  index: LaravelIndex,
+): LaravelIndex["models"][number] | null {
+  const resolved = resolvePhpClassReference(document.getText(), reference);
+  return index.models.find(
+    (model) => model.className === resolved || `${model.namespace}\\${model.className}` === resolved,
+  ) ?? null;
+}
+
+function builderChainCompletions(
+  model: LaravelIndex["models"][number],
+  index: LaravelIndex,
+): CompletionItem[] {
+  const items = new Map<string, CompletionItem>();
+
+  for (const scope of model.scopes) {
+    items.set(scope, {
+      label: scope,
+      kind: CompletionItemKind.Method,
+      detail: `Eloquent scope ${model.className}`,
+      data: { filePath: model.filePath },
+    });
+  }
+
+  for (const method of model.customBuilder?.methods ?? []) {
+    items.set(method.name, {
+      label: method.name,
+      kind: CompletionItemKind.Method,
+      detail: `Custom Eloquent builder ${model.customBuilder?.className}`,
+      data: { filePath: model.customBuilder?.filePath ?? model.filePath },
+    });
+  }
+
+  for (const macro of index.macros) {
+    if (/\bBuilder$/.test(macro.className)) {
+      items.set(macro.method, {
+        label: macro.method,
+        kind: CompletionItemKind.Method,
+        detail: `Macro on ${macro.className}`,
+        data: { filePath: macro.filePath },
+      });
+    }
+  }
+
+  if (model.usesSoftDeletes) {
+    for (const method of SOFT_DELETE_BUILDER_METHODS) {
+      items.set(method, {
+        label: method,
+        kind: CompletionItemKind.Method,
+        detail: "SoftDeletes builder method",
+        data: { filePath: model.filePath },
+      });
+    }
+  }
+
+  for (const method of ELOQUENT_BUILDER_METHODS) {
+    if (!items.has(method)) {
+      items.set(method, {
+        label: method,
+        kind: CompletionItemKind.Method,
+        detail: "Eloquent builder method",
+      });
+    }
+  }
+
+  return [...items.values()];
+}
+
+// Property access on a model instance (`$user-><cursor>`, `$this-><cursor>`
+// inside a model). The variable's model class is inferred from a type hint or
+// a `$var = Model::...` / `$var = new Model(...)` assignment in the document.
+function modelPropertyContext(
+  document: TextDocument,
+  linePrefix: string,
+  index: LaravelIndex,
+): LaravelIndex["models"][number] | null {
+  const access = /(\$[A-Za-z_][A-Za-z0-9_]*)->[A-Za-z0-9_]*$/.exec(linePrefix);
+  if (!access) {
+    return null;
+  }
+
+  if (access[1] === "$this") {
+    const documentPath = documentPathFromUri(document.uri);
+    return index.models.find((model) => model.filePath === documentPath) ?? null;
+  }
+
+  const documentText = document.getText();
+  const className = modelClassForVariable(documentText, access[1]);
+  if (!className) {
+    return null;
+  }
+
+  const resolved = resolvePhpClassReference(documentText, className);
+  return index.models.find(
+    (model) => model.className === resolved || `${model.namespace}\\${model.className}` === resolved,
+  ) ?? null;
+}
+
+function modelClassForVariable(source: string, variable: string): string | null {
+  const escapedName = variable.slice(1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const assignment = new RegExp(
+    `\\$${escapedName}\\s*=\\s*(?:new\\s+)?([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)\\s*(?:::|\\()`,
+  ).exec(source);
+  if (assignment) {
+    return assignment[1];
+  }
+
+  return new RegExp(`([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)\\s+\\$${escapedName}\\b`).exec(source)?.[1] ?? null;
+}
+
+function modelPropertyCompletions(
+  model: LaravelIndex["models"][number],
+  index: LaravelIndex,
+): CompletionItem[] {
+  const items = new Map<string, CompletionItem>();
+  const table = index.schemaTables.find((candidate) => candidate.name === model.tableName);
+  const casts = new Map((model.castDetails ?? []).map((cast) => [cast.name, cast.type]));
+  const accessors = new Map((model.accessorDetails ?? []).map((accessor) => [accessor.name, accessor]));
+
+  for (const column of table?.columns ?? []) {
+    items.set(column.name, {
+      label: column.name,
+      kind: CompletionItemKind.Field,
+      detail: modelColumnDetail(column, casts.get(column.name)),
+      data: { filePath: column.filePath, tableName: column.tableName },
+    });
+  }
+
+  for (const accessor of model.accessors ?? []) {
+    const detail = accessors.get(accessor);
+    items.set(accessor, {
+      label: accessor,
+      kind: CompletionItemKind.Property,
+      detail: modelAccessorDetail(model.className, detail),
+      data: { filePath: model.filePath },
+    });
+  }
+
+  for (const append of model.appends ?? []) {
+    if (!items.has(append)) {
+      items.set(append, {
+        label: append,
+        kind: CompletionItemKind.Property,
+        detail: `Appended Eloquent attribute on ${model.className}`,
+        data: { filePath: model.filePath },
+      });
+    }
+  }
+
+  for (const relation of model.relations) {
+    items.set(relation.name, {
+      label: relation.name,
+      kind: CompletionItemKind.Property,
+      detail: relation.relatedModel
+        ? `Eloquent ${relation.type} relation to ${relation.relatedModel}`
+        : `Eloquent ${relation.type} relation`,
+      data: { filePath: model.filePath },
+    });
+    items.set(`${relation.name}_count`, {
+      label: `${relation.name}_count`,
+      kind: CompletionItemKind.Property,
+      detail: `Count of ${relation.name} (via withCount)`,
+      data: { filePath: model.filePath },
+    });
+  }
+
+  return [...items.values()];
+}
+
+function modelColumnDetail(column: SchemaColumnInfo, castType: string | undefined): string {
+  const detail = schemaColumnDetail(column);
+  return castType ? `${detail} cast: ${castType}` : detail;
+}
+
+function modelAccessorDetail(
+  className: string,
+  accessor: NonNullable<LaravelIndex["models"][number]["accessorDetails"]>[number] | undefined,
+): string {
+  if (!accessor) {
+    return `Accessor on ${className}`;
+  }
+
+  const source = accessor.source === "attribute" ? "Attribute accessor" : "Accessor";
+  return accessor.returnType
+    ? `${source} on ${className}: ${accessor.returnType}`
+    : `${source} on ${className}`;
 }
 
 function schemaColumnsForDocument(document: TextDocument, index: LaravelIndex): SchemaColumnInfo[] {
@@ -625,10 +865,7 @@ function isInsideArtisanCommandString(linePrefix: string): boolean {
 }
 
 function isInsideMiddlewareString(linePrefix: string): boolean {
-  return /(?:Route::)?middleware\(\s*(?:\[\s*)?['"][^'"]*$/.test(linePrefix) ||
-    /->middleware\(\s*(?:\[\s*)?['"][^'"]*$/.test(linePrefix) ||
-    /(?:Route::)?withoutMiddleware\(\s*(?:\[\s*)?['"][^'"]*$/.test(linePrefix) ||
-    /->withoutMiddleware\(\s*(?:\[\s*)?['"][^'"]*$/.test(linePrefix);
+  return /(?:Route::|->)?\b(?:middleware|withoutMiddleware)\(\s*(?:\[\s*(?:['"][^'"]*['"]\s*,\s*)*)?['"][^'"]*$/.test(linePrefix);
 }
 
 function isInsideProviderClassArray(document: TextDocument, linePrefix: string): boolean {
@@ -763,7 +1000,7 @@ function artifactContextKinds(linePrefix: string): LaravelIndex["artifacts"][num
     /\bdispatch\s*\(\s*new\s+[A-Za-z_\\]*$/.test(linePrefix) ||
     /::dispatch\s*\(\s*[A-Za-z_\\]*$/.test(linePrefix)
   ) {
-    return ["job"];
+    return ["event", "job"];
   }
   if (/->(?:send|queue|later)\s*\(\s*new\s+[A-Za-z_\\]*$/.test(linePrefix)) {
     return ["mailable", "notification"];

@@ -1,47 +1,51 @@
-use std::{env, fs};
+use std::{env, path::PathBuf};
 
 use zed_extension_api::{self as zed, LanguageServerId, Result};
 
 const SERVER_ID: &str = "laravel-assist";
-const LOCAL_SERVER_PATH: &str = "server/dist/index.js";
+const SERVER_FILE_NAME: &str = "laravel-assist-server-v0.0.1.cjs";
+const SERVER_DOWNLOAD_URL: &str =
+    "https://github.com/eyedroot/zed-laravel-assist/releases/download/v0.0.1/laravel-assist-server.cjs";
 
 struct LaravelAssistExtension {
-    cached_server_path: Option<String>,
+    cached_server_script_path: Option<String>,
 }
 
 impl LaravelAssistExtension {
-    fn local_server_exists(&self) -> bool {
-        fs::metadata(LOCAL_SERVER_PATH).is_ok_and(|stat| stat.is_file())
-    }
-
-    fn local_server_path(&mut self) -> Result<String> {
-        if let Some(path) = &self.cached_server_path {
-            if self.local_server_exists() {
-                return Ok(path.clone());
-            }
+    fn server_script_path(&mut self, language_server_id: &LanguageServerId) -> Result<String> {
+        if let Some(path) = &self.cached_server_script_path {
+            return Ok(path.clone());
         }
 
-        if !self.local_server_exists() {
-            return Err(format!(
-                "Laravel Assist language server is not built. Run `cd server && npm install && npm run build`, then restart Zed. Expected `{LOCAL_SERVER_PATH}`."
-            ));
+        let script_path = PathBuf::from(
+            env::current_dir()
+                .map_err(|error| format!("failed to resolve extension work directory: {error}"))?,
+        )
+        .join(SERVER_FILE_NAME);
+
+        if !script_path.is_file() {
+            zed::set_language_server_installation_status(
+                language_server_id,
+                &zed::LanguageServerInstallationStatus::Downloading,
+            );
+            zed::download_file(
+                SERVER_DOWNLOAD_URL,
+                SERVER_FILE_NAME,
+                zed::DownloadedFileType::Uncompressed,
+            )?;
         }
 
-        let path = env::current_dir()
-            .map_err(|error| format!("failed to resolve extension directory: {error}"))?
-            .join(LOCAL_SERVER_PATH)
-            .to_string_lossy()
-            .to_string();
+        let script_path = script_path.to_string_lossy().to_string();
 
-        self.cached_server_path = Some(path.clone());
-        Ok(path)
+        self.cached_server_script_path = Some(script_path.clone());
+        Ok(script_path)
     }
 }
 
 impl zed::Extension for LaravelAssistExtension {
     fn new() -> Self {
         Self {
-            cached_server_path: None,
+            cached_server_script_path: None,
         }
     }
 
@@ -56,11 +60,10 @@ impl zed::Extension for LaravelAssistExtension {
 
         Ok(zed::Command {
             command: zed::node_binary_path()?,
-            args: vec![self.local_server_path()?, "--stdio".to_string()],
+            args: vec![self.server_script_path(language_server_id)?, "--stdio".to_string()],
             env: Default::default(),
         })
     }
 }
 
 zed::register_extension!(LaravelAssistExtension);
-

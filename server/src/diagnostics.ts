@@ -39,11 +39,78 @@ export function diagnosticsForDocument(document: TextDocument, index: LaravelInd
   const validationFields = new Set(validationFieldsForDocument(document, index).map((field) => field.field));
   const documentPath = documentPathFromUri(document.uri);
   const attributeTableName = index.models.find((model) => model.filePath === documentPath)?.tableName ?? null;
+  const indexedModelNames = new Set(index.models.flatMap((model) => [
+    model.className,
+    ...(model.namespace ? [`${model.namespace}\\${model.className}`] : []),
+  ]));
+  const currentRequest = documentPath
+    ? index.validationRules.find((ruleSet) => ruleSet.filePath === documentPath && ruleSet.source === "formRequest")
+    : null;
+  const currentArtifact = documentPath ? index.artifacts.find((artifact) => artifact.filePath === documentPath) : null;
   const bladeSectionLayout = bladeSectionLayoutForDocument(document, index);
   const bladeStackLayout = bladeStackLayoutForDocument(document, index);
   let insideModelAttributeArray = false;
 
   for (const [lineIndex, line] of document.getText().split(/\r?\n/).entries()) {
+    for (const convention of classConventionContextsInLine(line)) {
+      if (currentRequest?.className === convention.value) {
+        const inferredModelName = inferRequestModelName(convention.value);
+        if (inferredModelName && indexedModelNames.size > 0 && !hasIndexedModel(indexedModelNames, inferredModelName)) {
+          diagnostics.push(
+            unresolvedDiagnostic(
+              lineIndex,
+              { ...convention, kind: "requestConvention", model: inferredModelName },
+              `Form request '${convention.value}' does not match an indexed model '${inferredModelName}'.`,
+            ),
+          );
+        }
+      }
+
+      if (currentArtifact?.kind === "resource" && currentArtifact.className === convention.value) {
+        const inferredModelName = inferResourceModelName(convention.value);
+        if (indexedModelNames.size > 0 && (!inferredModelName || !hasIndexedModel(indexedModelNames, inferredModelName))) {
+          diagnostics.push(
+            unresolvedDiagnostic(
+              lineIndex,
+              { ...convention, kind: "resourceConvention", ...(inferredModelName ? { model: inferredModelName } : {}) },
+              inferredModelName
+                ? `JSON resource '${convention.value}' does not match an indexed model '${inferredModelName}'.`
+                : `JSON resource '${convention.value}' should be named '<Model>Resource'.`,
+            ),
+          );
+        }
+      }
+
+      if (documentPath?.includes("/Policies/") && convention.value.endsWith("Policy")) {
+        const policyModelName = convention.value.replace(/Policy$/, "");
+        if (indexedModelNames.size > 0 && !hasIndexedModel(indexedModelNames, policyModelName)) {
+          diagnostics.push(
+            unresolvedDiagnostic(
+              lineIndex,
+              { ...convention, kind: "policyConvention", model: policyModelName },
+              `Policy '${convention.value}' does not match an indexed model '${policyModelName}'.`,
+            ),
+          );
+        }
+      }
+    }
+
+    for (const policyMap of policyMapConventionContextsInLine(line)) {
+      const resolvedModel = resolvePhpClassReference(documentText, policyMap.model ?? "");
+      const modelName = resolvedModel.split("\\").at(-1) ?? resolvedModel;
+      const policyName = resolvePhpClassReference(documentText, policyMap.value).split("\\").at(-1) ?? policyMap.value;
+      const expectedPolicy = `${modelName}Policy`;
+      if (hasIndexedModel(indexedModelNames, resolvedModel) && policyName !== expectedPolicy) {
+        diagnostics.push(
+          unresolvedDiagnostic(
+            lineIndex,
+            policyMap,
+            `Policy '${policyName}' does not follow the expected '${expectedPolicy}' name for model '${modelName}'.`,
+          ),
+        );
+      }
+    }
+
     if (attributeTableName && /\bprotected\s+\$(fillable|guarded|casts)\s*=\s*\[/.test(line)) {
       insideModelAttributeArray = true;
     }
@@ -188,7 +255,7 @@ export function diagnosticsForDocument(document: TextDocument, index: LaravelInd
       if (context.kind === "command" && !commandNames.has(context.value)) {
         diagnostics.push(unresolvedDiagnostic(lineIndex, context, `Unknown Artisan command '${context.value}'.`));
       }
-      if (context.kind === "middleware" && !middlewareAliases.has(context.value)) {
+      if (context.kind === "middleware" && !middlewareAliases.has(context.value.split(":")[0])) {
         diagnostics.push(unresolvedDiagnostic(lineIndex, context, `Unknown middleware alias '${context.value}'.`));
       }
       if (context.kind === "validationField" && validationFields.size > 0 && !validationFields.has(context.value)) {
@@ -226,7 +293,10 @@ export interface LaravelDiagnosticData {
     | "factoryState"
     | "modelAttribute"
     | "middleware"
+    | "policyConvention"
     | "relation"
+    | "requestConvention"
+    | "resourceConvention"
     | "route"
     | "routeParameter"
     | "schemaColumn"
@@ -270,6 +340,63 @@ function componentContextsInLine(line: string): DiagnosticStringContext[] {
   }
 
   return contexts;
+}
+
+function classConventionContextsInLine(line: string): DiagnosticStringContext[] {
+  const contexts: DiagnosticStringContext[] = [];
+
+  for (const match of line.matchAll(/\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\b/g)) {
+    const start = (match.index ?? 0) + match[0].lastIndexOf(match[1]);
+    contexts.push({
+      end: start + match[1].length,
+      kind: "requestConvention",
+      start,
+      value: match[1],
+    });
+  }
+
+  return contexts;
+}
+
+function policyMapConventionContextsInLine(line: string): DiagnosticStringContext[] {
+  const contexts: DiagnosticStringContext[] = [];
+
+  for (const match of line.matchAll(/\b([A-Za-z_\\][A-Za-z0-9_\\]*)::class\s*=>\s*([A-Za-z_\\][A-Za-z0-9_\\]*)::class/g)) {
+    const policyStart = (match.index ?? 0) + match[0].lastIndexOf(match[2]);
+    contexts.push({
+      end: policyStart + match[2].length,
+      kind: "policyConvention",
+      model: match[1],
+      start: policyStart,
+      value: match[2],
+    });
+  }
+
+  for (const match of line.matchAll(/Gate::policy\(\s*([A-Za-z_\\][A-Za-z0-9_\\]*)::class\s*,\s*([A-Za-z_\\][A-Za-z0-9_\\]*)::class/g)) {
+    const policyStart = (match.index ?? 0) + match[0].lastIndexOf(match[2]);
+    contexts.push({
+      end: policyStart + match[2].length,
+      kind: "policyConvention",
+      model: match[1],
+      start: policyStart,
+      value: match[2],
+    });
+  }
+
+  return contexts;
+}
+
+function inferRequestModelName(className: string): string | null {
+  return /^(?:Store|Update)([A-Z][A-Za-z0-9_]*)Request$/.exec(className)?.[1] ?? null;
+}
+
+function inferResourceModelName(className: string): string | null {
+  return /^([A-Z][A-Za-z0-9_]*)Resource$/.exec(className)?.[1] ?? null;
+}
+
+function hasIndexedModel(indexedModelNames: Set<string>, modelName: string): boolean {
+  const baseName = modelName.split("\\").at(-1) ?? modelName;
+  return indexedModelNames.has(modelName) || indexedModelNames.has(baseName);
 }
 
 function componentPropContextsInLine(line: string): DiagnosticStringContext[] {
@@ -733,12 +860,7 @@ function diagnosticKindForPrefix(prefix: string): DiagnosticStringContext["kind"
   ) {
     return "command";
   }
-  if (
-    /(?:Route::)?middleware\s*\(\s*(?:\[\s*)?$/.test(prefix) ||
-    /->middleware\s*\(\s*(?:\[\s*)?$/.test(prefix) ||
-    /(?:Route::)?withoutMiddleware\s*\(\s*(?:\[\s*)?$/.test(prefix) ||
-    /->withoutMiddleware\s*\(\s*(?:\[\s*)?$/.test(prefix)
-  ) {
+  if (isMiddlewareStringPrefix(prefix)) {
     return "middleware";
   }
   if (
@@ -945,4 +1067,11 @@ function unresolvedDiagnostic(
     severity: DiagnosticSeverity.Warning,
     source: "laravel-assist",
   };
+}
+
+// Matches the string position inside `middleware(...)` / `withoutMiddleware(...)`
+// calls, including elements after the first in an inline array such as
+// `->middleware(['auth:api', 'ensure-selfsignup-completed'])`.
+function isMiddlewareStringPrefix(prefix: string): boolean {
+  return /(?:Route::|->)?\b(?:middleware|withoutMiddleware)\s*\(\s*(?:\[\s*(?:['"][^'"]*['"]\s*,\s*)*)?$/.test(prefix);
 }

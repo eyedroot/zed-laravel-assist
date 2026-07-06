@@ -424,6 +424,80 @@ describe("Laravel diagnostics", () => {
       }),
     ]);
   });
+
+  it("reports policy, request, and resource naming convention mismatches", () => {
+    const policyMapDocument = TextDocument.create(
+      "file:///app/app/Providers/AuthServiceProvider.php",
+      "php",
+      1,
+      "<?php\nuse App\\Models\\User;\nuse App\\Policies\\AccountPolicy;\nreturn [User::class => AccountPolicy::class];",
+    );
+    const requestDocument = TextDocument.create(
+      "file:///app/app/Http/Requests/StoreMemberRequest.php",
+      "php",
+      1,
+      "<?php\nclass StoreMemberRequest extends FormRequest {}",
+    );
+    const resourceDocument = TextDocument.create(
+      "file:///app/app/Http/Resources/MemberResource.php",
+      "php",
+      1,
+      "<?php\nclass MemberResource extends JsonResource {}",
+    );
+    const conventionIndex: LaravelIndex = {
+      ...indexFixture,
+      artifacts: [
+        {
+          className: "MemberResource",
+          filePath: "/app/app/Http/Resources/MemberResource.php",
+          kind: "resource",
+          namespace: "App\\Http\\Resources",
+          related: [],
+        },
+      ],
+      validationRules: [
+        ...indexFixture.validationRules,
+        {
+          className: "StoreMemberRequest",
+          fields: [],
+          filePath: "/app/app/Http/Requests/StoreMemberRequest.php",
+          namespace: "App\\Http\\Requests",
+          source: "formRequest",
+        },
+      ],
+    };
+
+    expect(diagnosticsForDocument(policyMapDocument, conventionIndex)).toEqual([
+      expect.objectContaining({
+        data: {
+          kind: "policyConvention",
+          model: "User",
+          value: "AccountPolicy",
+        },
+        message: "Policy 'AccountPolicy' does not follow the expected 'UserPolicy' name for model 'User'.",
+      }),
+    ]);
+    expect(diagnosticsForDocument(requestDocument, conventionIndex)).toEqual([
+      expect.objectContaining({
+        data: {
+          kind: "requestConvention",
+          model: "Member",
+          value: "StoreMemberRequest",
+        },
+        message: "Form request 'StoreMemberRequest' does not match an indexed model 'Member'.",
+      }),
+    ]);
+    expect(diagnosticsForDocument(resourceDocument, conventionIndex)).toEqual([
+      expect.objectContaining({
+        data: {
+          kind: "resourceConvention",
+          model: "Member",
+          value: "MemberResource",
+        },
+        message: "JSON resource 'MemberResource' does not match an indexed model 'Member'.",
+      }),
+    ]);
+  });
 });
 
 const indexFixture: LaravelIndex = {
@@ -527,6 +601,7 @@ const indexFixture: LaravelIndex = {
       alias: "auth.admin",
       className: "App\\Http\\Middleware\\EnsureAdmin",
       filePath: "/app/bootstrap/app.php",
+      range: { end: { character: 10, line: 5 }, start: { character: 4, line: 5 } },
       source: "bootstrap",
     },
   ],

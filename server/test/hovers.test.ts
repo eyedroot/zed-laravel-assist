@@ -307,7 +307,7 @@ describe("Laravel hovers", () => {
       contents: {
         kind: "markdown",
         value:
-          "**Schema table** `users`\n- Columns: `email`\n- File: `/app/database/migrations/2024_01_01_000000_create_users_table.php`",
+          "**Schema table** `users`\n- Columns: `email, status`\n- File: `/app/database/migrations/2024_01_01_000000_create_users_table.php`",
       },
     });
     expect(hoverForDocument(document, { line: 1, character: line.indexOf("email") + 1 }, indexFixture)).toEqual({
@@ -399,7 +399,7 @@ describe("Laravel hovers", () => {
       contents: {
         kind: "markdown",
         value:
-          "**Laravel event** `App\\Events\\OrderShipped`\n- Related: `SendShipmentNotification`\n- File: `/app/app/Events/OrderShipped.php`",
+          "**Laravel event** `App\\Events\\OrderShipped`\n- Constructor: `__construct(Order $order)`\n- Related: `SendShipmentNotification`\n- File: `/app/app/Events/OrderShipped.php`",
       },
     });
   });
@@ -434,6 +434,23 @@ describe("Laravel hovers", () => {
         kind: "markdown",
         value:
           "**Laravel facade** `App\\Facades\\Reports`\n- Accessor: `reports`\n- Binding: `singleton reports`\n- Concrete: `DatabaseReporter`\n- Binding file: `/app/app/Providers/AppServiceProvider.php`\n- File: `/app/app/Facades/Reports.php`",
+      },
+    });
+  });
+
+  it("shows root facade alias metadata", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/ReportController.php",
+      "php",
+      1,
+      "<?php\n\\Auth::check();",
+    );
+
+    expect(hoverForDocument(document, { line: 1, character: 2 }, indexFixture)).toEqual({
+      contents: {
+        kind: "markdown",
+        value:
+          "**Laravel facade** `Auth`\n- Source: `builtIn`\n- Target: `Illuminate\\Support\\Facades\\Auth`\n- Accessor: `auth`\n- File: `/app/vendor/laravel/framework/src/Illuminate/Support/Facades/Auth.php`",
       },
     });
   });
@@ -501,6 +518,60 @@ describe("Laravel hovers", () => {
       },
     });
   });
+  it("shows model attribute hover with column type", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\n$user = User::query()->first();\necho $user->email;\necho $user->status;\necho $user->full_name;\necho $user->kind_name;",
+    );
+
+    expect(hoverForDocument(document, { line: 2, character: 14 }, indexFixture)).toEqual({
+      contents: {
+        kind: "markdown",
+        value:
+          "**Model attribute** `User.email`\n- Column type: `string`\n- Table: `users`\n- Migration: `/app/database/migrations/2024_01_01_000000_create_users_table.php`",
+      },
+    });
+    expect(hoverForDocument(document, { line: 3, character: 14 }, indexFixture)).toEqual({
+      contents: {
+        kind: "markdown",
+        value:
+          "**Model attribute** `User.status`\n- Column type: `boolean`\n- Cast: `boolean`\n- Table: `users`\n- Migration: `/app/database/migrations/2024_01_01_000000_create_users_table.php`",
+      },
+    });
+    expect(hoverForDocument(document, { line: 4, character: 14 }, indexFixture)).toEqual({
+      contents: {
+        kind: "markdown",
+        value:
+          "**Model accessor** `User.full_name`\n- Source: `classic accessor`\n- Returns: `string`\n- File: `/app/app/Models/User.php`",
+      },
+    });
+    expect(hoverForDocument(document, { line: 5, character: 14 }, indexFixture)).toEqual({
+      contents: {
+        kind: "markdown",
+        value:
+          "**Appended model attribute** `User.kind_name`\n- Declared in: `$appends`\n- File: `/app/app/Models/User.php`",
+      },
+    });
+  });
+
+  it("shows relation and relation count hovers on model properties", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\n$user = User::query()->first();\necho $user->posts_count;\necho $user->posts;",
+    );
+
+    expect(hoverForDocument(document, { line: 2, character: 14 }, indexFixture)?.contents).toMatchObject({
+      value: expect.stringContaining("**Relation count** `User.posts_count`"),
+    });
+    expect(hoverForDocument(document, { line: 3, character: 14 }, indexFixture)?.contents).toMatchObject({
+      value: expect.stringContaining("**Eloquent relation** `User.posts`"),
+    });
+  });
+
 });
 
 const indexFixture: LaravelIndex = {
@@ -631,12 +702,28 @@ const indexFixture: LaravelIndex = {
       alias: "auth.admin",
       className: "App\\Http\\Middleware\\EnsureAdmin",
       filePath: "/app/bootstrap/app.php",
+      range: { end: { character: 10, line: 5 }, start: { character: 4, line: 5 } },
       source: "bootstrap",
     },
   ],
   models: [
     {
-      casts: [],
+      accessorDetails: [
+        {
+          name: "full_name",
+          returnType: "string",
+          source: "classic",
+        },
+      ],
+      accessors: ["full_name"],
+      appends: ["kind_name"],
+      casts: ["status"],
+      castDetails: [
+        {
+          name: "status",
+          type: "boolean",
+        },
+      ],
       className: "User",
       customBuilder: {
         className: "UserBuilder",
@@ -707,6 +794,13 @@ const indexFixture: LaravelIndex = {
           tableName: "users",
           type: "string",
         },
+        {
+          filePath: "/app/database/migrations/2024_01_01_000000_create_users_table.php",
+          modifiers: [],
+          name: "status",
+          tableName: "users",
+          type: "boolean",
+        },
       ],
       filePath: "/app/database/migrations/2024_01_01_000000_create_users_table.php",
       name: "users",
@@ -738,6 +832,7 @@ const indexFixture: LaravelIndex = {
   artifacts: [
     {
       className: "OrderShipped",
+      constructorSignature: "Order $order",
       filePath: "/app/app/Events/OrderShipped.php",
       kind: "event",
       namespace: "App\\Events",
@@ -756,6 +851,14 @@ const indexFixture: LaravelIndex = {
       className: "Reports",
       filePath: "/app/app/Facades/Reports.php",
       namespace: "App\\Facades",
+    },
+    {
+      accessor: "auth",
+      className: "Auth",
+      filePath: "/app/vendor/laravel/framework/src/Illuminate/Support/Facades/Auth.php",
+      namespace: null,
+      source: "builtIn",
+      target: "Illuminate\\Support\\Facades\\Auth",
     },
   ],
   providers: [

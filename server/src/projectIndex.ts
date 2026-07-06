@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 
-export const LARAVEL_INDEX_CACHE_VERSION = 24;
+export const LARAVEL_INDEX_CACHE_VERSION = 30;
 
 export interface LaravelIndex {
   authorization: AuthorizationInfo[];
@@ -30,6 +30,10 @@ export interface LaravelIndex {
 }
 
 export interface ModelInfo {
+  accessors?: string[];
+  accessorDetails?: ModelAccessorInfo[];
+  appends?: string[];
+  castDetails?: ModelCastInfo[];
   builderMethods?: ModelBuilderMethodInfo[];
   className: string;
   customBuilder?: ModelCustomBuilderInfo;
@@ -42,6 +46,18 @@ export interface ModelInfo {
   relationships: string[];
   scopes: string[];
   tableName: string;
+  usesSoftDeletes?: boolean;
+}
+
+export interface ModelAccessorInfo {
+  name: string;
+  returnType: string | null;
+  source: "attribute" | "classic";
+}
+
+export interface ModelCastInfo {
+  name: string;
+  type: string;
 }
 
 export interface ModelBuilderMethodInfo {
@@ -66,11 +82,14 @@ export type ModelRelationType =
   | "belongsTo"
   | "belongsToMany"
   | "hasMany"
+  | "hasManyThrough"
   | "hasOne"
+  | "hasOneThrough"
   | "morphMany"
   | "morphOne"
   | "morphTo"
-  | "morphToMany";
+  | "morphToMany"
+  | "morphedByMany";
 
 export interface RouteInfo {
   action: string | null;
@@ -207,6 +226,8 @@ export interface FacadeInfo {
   className: string;
   filePath: string;
   namespace: string | null;
+  source?: "alias" | "builtIn" | "custom";
+  target?: string | null;
 }
 
 export interface MacroInfo {
@@ -219,6 +240,7 @@ export interface MiddlewareInfo {
   alias: string;
   className: string | null;
   filePath: string;
+  range: SourceRange;
   source: "bootstrap" | "kernel";
 }
 
@@ -240,6 +262,7 @@ export interface SeederInfo {
 
 export interface LaravelArtifactInfo {
   className: string;
+  constructorSignature?: string | null;
   filePath: string;
   kind: LaravelArtifactKind;
   namespace: string | null;
@@ -261,6 +284,80 @@ export interface ServiceProviderInfo {
   namespace: string | null;
   source: "bootstrap" | "class" | "composer" | "config";
 }
+
+const defaultLaravelFacadeAliases = new Map<string, string>([
+  ["App", "Illuminate\\Support\\Facades\\App"],
+  ["Arr", "Illuminate\\Support\\Arr"],
+  ["Artisan", "Illuminate\\Support\\Facades\\Artisan"],
+  ["Auth", "Illuminate\\Support\\Facades\\Auth"],
+  ["Blade", "Illuminate\\Support\\Facades\\Blade"],
+  ["Broadcast", "Illuminate\\Support\\Facades\\Broadcast"],
+  ["Bus", "Illuminate\\Support\\Facades\\Bus"],
+  ["Cache", "Illuminate\\Support\\Facades\\Cache"],
+  ["Config", "Illuminate\\Support\\Facades\\Config"],
+  ["Context", "Illuminate\\Support\\Facades\\Context"],
+  ["Cookie", "Illuminate\\Support\\Facades\\Cookie"],
+  ["Crypt", "Illuminate\\Support\\Facades\\Crypt"],
+  ["Date", "Illuminate\\Support\\Facades\\Date"],
+  ["DB", "Illuminate\\Support\\Facades\\DB"],
+  ["Eloquent", "Illuminate\\Database\\Eloquent\\Model"],
+  ["Event", "Illuminate\\Support\\Facades\\Event"],
+  ["File", "Illuminate\\Support\\Facades\\File"],
+  ["Gate", "Illuminate\\Support\\Facades\\Gate"],
+  ["Hash", "Illuminate\\Support\\Facades\\Hash"],
+  ["Http", "Illuminate\\Support\\Facades\\Http"],
+  ["Lang", "Illuminate\\Support\\Facades\\Lang"],
+  ["Log", "Illuminate\\Support\\Facades\\Log"],
+  ["Mail", "Illuminate\\Support\\Facades\\Mail"],
+  ["Notification", "Illuminate\\Support\\Facades\\Notification"],
+  ["Password", "Illuminate\\Support\\Facades\\Password"],
+  ["Process", "Illuminate\\Support\\Facades\\Process"],
+  ["Queue", "Illuminate\\Support\\Facades\\Queue"],
+  ["RateLimiter", "Illuminate\\Support\\Facades\\RateLimiter"],
+  ["Redirect", "Illuminate\\Support\\Facades\\Redirect"],
+  ["Request", "Illuminate\\Support\\Facades\\Request"],
+  ["Response", "Illuminate\\Support\\Facades\\Response"],
+  ["Route", "Illuminate\\Support\\Facades\\Route"],
+  ["Schedule", "Illuminate\\Support\\Facades\\Schedule"],
+  ["Schema", "Illuminate\\Support\\Facades\\Schema"],
+  ["Session", "Illuminate\\Support\\Facades\\Session"],
+  ["Storage", "Illuminate\\Support\\Facades\\Storage"],
+  ["Str", "Illuminate\\Support\\Str"],
+  ["URL", "Illuminate\\Support\\Facades\\URL"],
+  ["Validator", "Illuminate\\Support\\Facades\\Validator"],
+  ["View", "Illuminate\\Support\\Facades\\View"],
+  ["Vite", "Illuminate\\Support\\Facades\\Vite"],
+]);
+
+const defaultFacadeAccessors = new Map<string, string>([
+  ["App", "app"],
+  ["Artisan", "artisan"],
+  ["Auth", "auth"],
+  ["Blade", "blade.compiler"],
+  ["Cache", "cache"],
+  ["Config", "config"],
+  ["Cookie", "cookie"],
+  ["Crypt", "encrypter"],
+  ["DB", "db"],
+  ["Event", "events"],
+  ["File", "files"],
+  ["Gate", "gate"],
+  ["Hash", "hash"],
+  ["Lang", "translator"],
+  ["Log", "log"],
+  ["Mail", "mailer"],
+  ["Queue", "queue"],
+  ["Redirect", "redirect"],
+  ["Request", "request"],
+  ["Response", "ResponseFactory"],
+  ["Route", "router"],
+  ["Schema", "db.schema"],
+  ["Session", "session"],
+  ["Storage", "filesystem"],
+  ["URL", "url"],
+  ["Validator", "validator"],
+  ["View", "view"],
+]);
 
 export type LaravelIndexFileKind =
   | "authorization"
@@ -551,7 +648,10 @@ export function indexFromCache(cache: LaravelIndexCache): LaravelIndex {
     envEntries: sortBy(uniqueEnvEntries(envEntries), (entry) => entry.key),
     envKeys: uniqueSorted(envEntries.map((entry) => entry.key)),
     factories: sortBy(uniqueFactories(factories), (factory) => factory.className),
-    facades: sortBy(resolveFacadeBindings(uniqueFacades(facades), uniqueBindings), (facade) => facade.className),
+    facades: sortBy(
+      resolveFacadeBindings(uniqueFacades([...builtInLaravelFacadeAliases(cache.rootPath), ...facades]), uniqueBindings),
+      (facade) => facade.className,
+    ),
     macros: sortBy(uniqueMacros(macros), (macro) => `${macro.className}:${macro.method}`),
     middleware: sortBy(uniqueMiddleware(middleware), (entry) => entry.alias),
     models: sortBy(resolveCustomModelBuilders(models), (model) => model.className),
@@ -571,14 +671,22 @@ export function extractRouteNames(source: string): string[] {
   );
 }
 
-export function extractRouteInfo(filePath: string, source: string): RouteInfo[] {
+export function extractRouteInfo(
+  filePath: string,
+  source: string,
+  baseContext: Partial<RouteContext> = {},
+): RouteInfo[] {
   const routes: RouteInfo[] = [];
   const groupStack: ActiveRouteGroup[] = [];
+  const initialContext = {
+    ...emptyRouteContext,
+    ...baseContext,
+  };
   let braceDepth = 0;
   let offset = 0;
 
   for (const line of source.split(/\r?\n/)) {
-    const inheritedContext = combineRouteContexts(groupStack.map((group) => group.context));
+    const inheritedContext = combineRouteContexts([initialContext, ...groupStack.map((group) => group.context)]);
     const groupContext = parseRouteGroupContext(line);
     const nextBraceDepth = braceDepth + braceDelta(line);
 
@@ -1041,12 +1149,13 @@ function combineUri(prefix: string | null, uri: string | null): string | null {
   const parts = [prefix, uri]
     .filter((part): part is string => Boolean(part))
     .map((part) => part.replace(/^\/+|\/+$/g, ""));
+  const nonEmptyParts = parts.filter((part) => part.length > 0);
 
-  if (parts.length === 0) {
+  if (nonEmptyParts.length === 0) {
     return uri;
   }
 
-  return parts.join("/");
+  return nonEmptyParts.join("/");
 }
 
 function sourceRangeForOffset(source: string, startOffset: number, length: number): SourceRange {
@@ -1103,13 +1212,25 @@ export function extractConfigKeys(fileName: string, source: string): string[] {
 export function extractConfigKeyInfo(fileName: string, source: string): ConfigKeyInfo[] {
   const baseName = path.basename(fileName, ".php");
   const entries: ConfigKeyInfo[] = [];
-  const arrayStart = source.indexOf("[");
+  const arrayStart = configRootArrayStart(source);
 
   if (arrayStart >= 0) {
     collectConfigArrayKeys(source, arrayStart + 1, [baseName], entries, fileName);
   }
 
   return sortBy(uniqueConfigEntries(entries), (entry) => entry.key);
+}
+
+function configRootArrayStart(source: string): number {
+  const returnMatch = /\breturn\b/.exec(source);
+  if (returnMatch) {
+    const arrayStart = skipConfigInsignificant(source, returnMatch.index + returnMatch[0].length);
+    if (source[arrayStart] === "[") {
+      return arrayStart;
+    }
+  }
+
+  return source.indexOf("[");
 }
 
 function collectConfigArrayKeys(
@@ -1122,7 +1243,7 @@ function collectConfigArrayKeys(
   let index = startIndex;
 
   while (index < source.length) {
-    index = skipConfigWhitespace(source, index);
+    index = skipConfigInsignificant(source, index);
     if (source[index] === "]") {
       return index + 1;
     }
@@ -1137,13 +1258,13 @@ function collectConfigArrayKeys(
       continue;
     }
 
-    index = skipConfigWhitespace(source, parsedKey.end);
+    index = skipConfigInsignificant(source, parsedKey.end);
     if (!source.startsWith("=>", index)) {
       index = parsedKey.end;
       continue;
     }
 
-    index = skipConfigWhitespace(source, index + 2);
+    index = skipConfigInsignificant(source, index + 2);
     const nextPrefix = [...prefix, parsedKey.value];
     entries.push({
       filePath,
@@ -1185,11 +1306,30 @@ function parseConfigString(source: string, startIndex: number): { end: number; v
   return null;
 }
 
-function skipConfigWhitespace(source: string, startIndex: number): number {
+// Skips whitespace and PHP comments so comment bodies (which routinely contain
+// quotes, commas, and brackets) never influence key or value parsing.
+function skipConfigInsignificant(source: string, startIndex: number): number {
   let index = startIndex;
-  while (index < source.length && /\s/.test(source[index])) {
-    index += 1;
+
+  while (index < source.length) {
+    const char = source[index];
+    if (/\s/.test(char)) {
+      index += 1;
+      continue;
+    }
+    if (char === "/" && source[index + 1] === "*") {
+      const commentEnd = source.indexOf("*/", index + 2);
+      index = commentEnd === -1 ? source.length : commentEnd + 2;
+      continue;
+    }
+    if ((char === "/" && source[index + 1] === "/") || char === "#") {
+      const lineEnd = source.indexOf("\n", index);
+      index = lineEnd === -1 ? source.length : lineEnd + 1;
+      continue;
+    }
+    return index;
   }
+
   return index;
 }
 
@@ -1199,6 +1339,12 @@ function skipConfigValue(source: string, startIndex: number): number {
   let parenDepth = 0;
 
   while (index < source.length) {
+    const insignificantEnd = skipConfigInsignificant(source, index);
+    if (insignificantEnd !== index) {
+      index = insignificantEnd;
+      continue;
+    }
+
     const parsedString = parseConfigString(source, index);
     if (parsedString) {
       index = parsedString.end;
@@ -1267,9 +1413,16 @@ export function extractModelInfo(filePath: string, source: string): ModelInfo | 
   const customBuilderClass = extractCustomBuilderClass(source);
   const builderMethods = extractModelBuilderMethods(source);
 
+  const accessorDetails = extractModelAccessors(source);
+  const castDetails = extractModelCasts(source);
+  const appends = extractStringArrayProperty(source, "appends");
+
   return {
+    ...(accessorDetails.length > 0 ? { accessors: accessorDetails.map((accessor) => accessor.name), accessorDetails } : {}),
+    ...(appends.length > 0 ? { appends } : {}),
     ...(builderMethods.length > 0 ? { builderMethods } : {}),
-    casts: extractArrayPropertyKeys(source, "casts"),
+    ...(castDetails.length > 0 ? { castDetails } : {}),
+    casts: castDetails.map((cast) => cast.name),
     className,
     ...(customBuilderClass
       ? {
@@ -1289,7 +1442,109 @@ export function extractModelInfo(filePath: string, source: string): ModelInfo | 
     relationships: relations.map((relation) => relation.name),
     scopes: extractModelScopes(source),
     tableName: extractModelTableName(className, source),
+    ...(modelUsesSoftDeletes(source) ? { usesSoftDeletes: true } : {}),
   };
+}
+
+// Collects virtual attributes: classic `getFooBarAttribute()` accessors and
+// Laravel 9+ `fooBar(): Attribute` accessor methods, exposed as `foo_bar`.
+function extractModelAccessors(source: string): ModelAccessorInfo[] {
+  const accessors = new Map<string, ModelAccessorInfo>();
+  const docProperties = modelDocPropertyTypes(source);
+
+  for (const match of source.matchAll(/(?:\/\*\*([\s\S]*?)\*\/\s*)?(?:(?:public|protected|private)\s+)?function\s+get([A-Z][A-Za-z0-9]*)Attribute\s*\([^)]*\)\s*(?::\s*([?\\A-Za-z_][\\A-Za-z0-9_]*))?/g)) {
+    const name = attributeNameFromStudly(match[2]);
+    accessors.set(name, {
+      name,
+      returnType: normalizePhpType(match[3] ?? phpDocReturnType(match[1]) ?? docProperties.get(name)),
+      source: "classic",
+    });
+  }
+
+  for (const match of source.matchAll(
+    /(?:\/\*\*([\s\S]*?)\*\/\s*)?(?:(?:public|protected|private)\s+)?function\s+([a-z][A-Za-z0-9_]*)\s*\(\s*\)\s*:\s*\\?(?:Illuminate\\Database\\Eloquent\\Casts\\)?Attribute\b/g,
+  )) {
+    const name = attributeNameFromStudly(match[2]);
+    accessors.set(name, {
+      name,
+      returnType: normalizePhpType(phpDocReturnType(match[1]) ?? docProperties.get(name)),
+      source: "attribute",
+    });
+  }
+
+  return sortBy([...accessors.values()], (accessor) => accessor.name);
+}
+
+function attributeNameFromStudly(value: string): string {
+  return value.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+}
+
+function extractModelCasts(source: string): ModelCastInfo[] {
+  const casts = new Map<string, string>();
+
+  for (const entry of extractStringMapProperty(source, "casts")) {
+    casts.set(entry.key, entry.value);
+  }
+
+  for (const block of methodReturnArrayBlocks(source, "casts")) {
+    for (const entry of stringMapEntries(block)) {
+      casts.set(entry.key, entry.value);
+    }
+  }
+
+  return sortBy([...casts.entries()].map(([name, type]) => ({ name, type })), (cast) => cast.name);
+}
+
+function extractStringMapProperty(source: string, propertyName: string): Array<{ key: string; value: string }> {
+  const propertyMatch = new RegExp(`\\bprotected\\s+\\$${propertyName}\\s*=\\s*\\[([\\s\\S]*?)\\]\\s*;`).exec(
+    source,
+  );
+  return propertyMatch ? stringMapEntries(propertyMatch[1]) : [];
+}
+
+function methodReturnArrayBlocks(source: string, methodName: string): string[] {
+  const blocks: string[] = [];
+  const regex = new RegExp(`function\\s+${methodName}\\s*\\([^)]*\\)\\s*(?::\\s*array)?\\s*\\{([\\s\\S]*?)\\}`, "g");
+
+  for (const match of source.matchAll(regex)) {
+    const returnMatch = /return\s*\[([\s\S]*?)\]\s*;/.exec(match[1]);
+    if (returnMatch) {
+      blocks.push(returnMatch[1]);
+    }
+  }
+
+  return blocks;
+}
+
+function stringMapEntries(source: string): Array<{ key: string; value: string }> {
+  return [...source.matchAll(/['"]([^'"]+)['"]\s*=>\s*['"]([^'"]+)['"]/g)]
+    .map((match) => ({ key: match[1], value: match[2] }));
+}
+
+function phpDocReturnType(docblock: string | undefined): string | null {
+  return docblock ? /@return\s+([^\s*]+)/.exec(docblock)?.[1] ?? null : null;
+}
+
+function modelDocPropertyTypes(source: string): Map<string, string> {
+  const properties = new Map<string, string>();
+  const classDocblock = /\/\*\*([\s\S]*?)\*\/\s*(?:(?:abstract|final)\s+)?class\s+[A-Za-z_][A-Za-z0-9_]*/.exec(source)?.[1];
+  if (!classDocblock) {
+    return properties;
+  }
+
+  for (const match of classDocblock.matchAll(/@property(?:-read|-write)?\s+([^\s*]+)\s+\$([A-Za-z_][A-Za-z0-9_]*)/g)) {
+    properties.set(match[2], match[1]);
+  }
+
+  return properties;
+}
+
+function normalizePhpType(type: string | null | undefined): string | null {
+  return type?.replace(/^\?/, "").replace(/^\\/, "") ?? null;
+}
+
+function modelUsesSoftDeletes(source: string): boolean {
+  return /\buse\s+[^;(]*\bSoftDeletes\b/.test(source);
 }
 
 function extractCustomBuilderClass(source: string): string | null {
@@ -1338,7 +1593,7 @@ function extractModelRelations(source: string): ModelRelationInfo[] {
 
   for (const methodMatch of source.matchAll(methodRegex)) {
     const relationMatch =
-      /\$this->(hasOne|hasMany|belongsTo|belongsToMany|morphOne|morphMany|morphTo|morphToMany)\s*\(([^)]*)\)/.exec(
+      /\$this->(hasOne|hasMany|hasOneThrough|hasManyThrough|belongsTo|belongsToMany|morphOne|morphMany|morphTo|morphToMany|morphedByMany)\s*\(([^)]*)\)/.exec(
         methodMatch[2],
       );
     if (!relationMatch) {
@@ -1640,6 +1895,10 @@ export function extractAuthorizationInfo(filePath: string, source: string): Auth
 }
 
 export function extractFacadeInfo(filePath: string, source: string): FacadeInfo[] {
+  if (filePath.endsWith(path.join("config", "app.php"))) {
+    return extractFacadeAliasInfo(filePath, source);
+  }
+
   const className = phpClassName(source);
   if (!className || !/extends\s+Facade\b/.test(source)) {
     return [];
@@ -1654,6 +1913,57 @@ export function extractFacadeInfo(filePath: string, source: string): FacadeInfo[
       namespace: phpNamespace(source),
     },
   ];
+}
+
+function extractFacadeAliasInfo(filePath: string, source: string): FacadeInfo[] {
+  const facades: FacadeInfo[] = [];
+
+  for (const block of facadeAliasBlocks(source)) {
+    for (const match of block.matchAll(/['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*=>\s*([^,\]\n]+)/g)) {
+      const target = serviceReference(match[2]) ?? match[2].trim();
+      if (!/^[A-Za-z_\\][A-Za-z0-9_\\]*$/.test(target)) {
+        continue;
+      }
+
+      facades.push({
+        accessor: defaultFacadeAccessors.get(match[1]) ?? null,
+        binding: null,
+        className: match[1],
+        filePath,
+        namespace: null,
+        source: "alias",
+        target,
+      });
+    }
+  }
+
+  return sortBy(facades, (facade) => facade.className);
+}
+
+function facadeAliasBlocks(source: string): string[] {
+  return [...source.matchAll(/['"]aliases['"]\s*=>\s*(?:[^[]*?\(\s*)?\[([\s\S]*?)\]/g)].map(
+    (match) => match[1],
+  );
+}
+
+function builtInLaravelFacadeAliases(rootPath: string): FacadeInfo[] {
+  return [...defaultLaravelFacadeAliases.entries()].map(([className, target]) => ({
+    accessor: defaultFacadeAccessors.get(className) ?? null,
+    binding: null,
+    className,
+    filePath: facadeTargetFilePath(rootPath, target),
+    namespace: null,
+    source: "builtIn" as const,
+    target,
+  }));
+}
+
+function facadeTargetFilePath(rootPath: string, target: string): string {
+  if (target.startsWith("Illuminate\\")) {
+    return path.join(rootPath, "vendor", "laravel", "framework", "src", `${target.replace(/\\/g, path.sep)}.php`);
+  }
+
+  return path.join(rootPath, `${target.replace(/\\/g, path.sep)}.php`);
 }
 
 export function extractMacroInfo(filePath: string, source: string): MacroInfo[] {
@@ -1677,14 +1987,25 @@ export function extractMiddlewareInfo(filePath: string, source: string): Middlew
     : "kernel";
 
   for (const block of middlewareAliasBlocks(source)) {
-    for (const match of block.matchAll(/['"]([^'"]+)['"]\s*=>\s*([^,\]\n]+)/g)) {
+    for (const match of block.content.matchAll(/['"]([^'"]+)['"]\s*=>\s*([^,\]\n]+)/g)) {
       entries.push({
         alias: match[1],
         className: serviceReference(match[2]) ?? match[2].trim(),
         filePath,
+        range: sourceRangeForOffset(source, block.offset + (match.index ?? 0) + 1, match[1].length),
         source: sourceKind,
       });
     }
+  }
+
+  for (const group of middlewareGroupEntries(source)) {
+    entries.push({
+      alias: group.name,
+      className: null,
+      filePath,
+      range: sourceRangeForOffset(source, group.offset, group.name.length),
+      source: sourceKind,
+    });
   }
 
   return sortBy(uniqueMiddleware(entries), (entry) => entry.alias);
@@ -1771,17 +2092,38 @@ function classConstantsInSource(source: string): string[] {
   return uniqueSorted([...source.matchAll(/([A-Za-z_\\][A-Za-z0-9_\\]*)::class/g)].map((match) => match[1]));
 }
 
-function middlewareAliasBlocks(source: string): string[] {
-  const blocks: string[] = [];
+function middlewareAliasBlocks(source: string): Array<{ content: string; offset: number }> {
+  const blocks: Array<{ content: string; offset: number }> = [];
 
   for (const match of source.matchAll(/->alias\(\s*\[([\s\S]*?)\]\s*\)/g)) {
-    blocks.push(match[1]);
+    blocks.push({ content: match[1], offset: (match.index ?? 0) + match[0].indexOf(match[1]) });
   }
   for (const match of source.matchAll(/\$(?:middlewareAliases|routeMiddleware)\s*=\s*\[([\s\S]*?)\]\s*;/g)) {
-    blocks.push(match[1]);
+    blocks.push({ content: match[1], offset: (match.index ?? 0) + match[0].indexOf(match[1]) });
   }
 
   return blocks;
+}
+
+// Middleware group names are navigable and diagnosable just like aliases:
+// `$middlewareGroups` keys in HTTP kernels and `$middleware->(append|prepend)?
+// group(...)` registrations in Laravel 11+ bootstrap files.
+function middlewareGroupEntries(source: string): Array<{ name: string; offset: number }> {
+  const groups: Array<{ name: string; offset: number }> = [];
+
+  for (const block of source.matchAll(/\$middlewareGroups\s*=\s*\[([\s\S]*?)\]\s*;/g)) {
+    const content = block[1];
+    const contentOffset = (block.index ?? 0) + block[0].indexOf(content);
+    for (const match of content.matchAll(/['"]([^'"]+)['"]\s*=>\s*\[/g)) {
+      groups.push({ name: match[1], offset: contentOffset + (match.index ?? 0) + 1 });
+    }
+  }
+
+  for (const match of source.matchAll(/\$middleware\s*->\s*(?:group|appendToGroup|prependToGroup)\(\s*['"]([^'"]+)['"]/g)) {
+    groups.push({ name: match[1], offset: (match.index ?? 0) + match[0].lastIndexOf(match[1]) });
+  }
+
+  return groups;
 }
 
 export function extractFactoryInfo(filePath: string, source: string): FactoryInfo[] {
@@ -1875,15 +2217,27 @@ export function extractLaravelArtifacts(
     return [];
   }
 
+  const constructorSignature = extractConstructorSignature(source);
+
   return [
     {
       className,
+      ...(constructorSignature ? { constructorSignature } : {}),
       filePath,
       kind,
       namespace: phpNamespace(source),
       related: extractArtifactRelatedClasses(source),
     },
   ];
+}
+
+function extractConstructorSignature(source: string): string | null {
+  const match = /\bfunction\s+__construct\s*\(([\s\S]*?)\)/.exec(source);
+  if (!match) {
+    return null;
+  }
+
+  return match[1].replace(/\s+/g, " ").trim();
 }
 
 function artifactKindForPath(
@@ -2284,6 +2638,7 @@ function indexFileCacheKey(candidate: IndexFileCandidate): string {
 async function collectIndexFileCandidates(rootPath: string): Promise<IndexFileCandidate[]> {
   const candidates: IndexFileCandidate[] = [];
   const seen = new Set<string>();
+  const moduleRoots = await moduleDirectoryRoots(rootPath);
 
   const addFiles = async (
     kind: LaravelIndexFileKind,
@@ -2339,8 +2694,14 @@ async function collectIndexFileCandidates(rootPath: string): Promise<IndexFileCa
     addFiles("controller", path.join(rootPath, "app", "Http", "Controllers"), (filePath) =>
       filePath.endsWith(".php"),
     ),
+    ...moduleRoots.map((moduleRoot) =>
+      addFiles("controller", moduleRoot, (filePath) => filePath.endsWith("Controller.php")),
+    ),
     addFiles("facade", path.join(rootPath, "app", "Facades"), (filePath) =>
       filePath.endsWith(".php"),
+    ),
+    addFiles("facade", path.join(rootPath, "config"), (filePath) =>
+      path.basename(filePath) === "app.php",
     ),
     addFiles("factory", path.join(rootPath, "database", "factories"), (filePath) =>
       filePath.endsWith(".php"),
@@ -2356,6 +2717,7 @@ async function collectIndexFileCandidates(rootPath: string): Promise<IndexFileCa
       filePath.endsWith(".php"),
     ),
     addFiles("route", path.join(rootPath, "routes"), (filePath) => filePath.endsWith(".php")),
+    addFiles("route", rootPath, (filePath) => path.basename(filePath) === "router.php"),
     addFiles("view", path.join(rootPath, "resources", "views"), (filePath) =>
       filePath.endsWith(".blade.php"),
     ),
@@ -2459,7 +2821,7 @@ function indexFileKindsForPath(rootPath: string, filePath: string): LaravelIndex
 
   if (relativePath.startsWith(`config${path.sep}`) && filePath.endsWith(".php")) {
     if (relativePath === path.join("config", "app.php")) {
-      return ["config", "provider"];
+      return ["config", "facade", "provider"];
     }
     return ["config"];
   }
@@ -2499,6 +2861,14 @@ function indexFileKindsForPath(rootPath: string, filePath: string): LaravelIndex
     isTranslationFile(filePath)
   ) {
     return ["translation"];
+  }
+
+  if (path.basename(filePath) === "router.php") {
+    return ["route"];
+  }
+
+  if (/^modules$/i.test(relativePath.split(path.sep)[0] ?? "") && filePath.endsWith("Controller.php")) {
+    return ["controller"];
   }
 
   if (
@@ -2589,7 +2959,7 @@ async function indexFile(
     case "controller":
       return extractControllerInfo(filePath, await safeRead(filePath));
     case "route":
-      return extractRouteInfo(filePath, await safeRead(filePath));
+      return extractRouteInfo(filePath, await safeRead(filePath), await routeBaseContextForFile(rootPath, filePath));
     case "view":
       return [extractBladeViewInfo(rootPath, filePath, await safeRead(filePath))];
     case "config":
@@ -2621,8 +2991,47 @@ async function indexFile(
   }
 }
 
+async function routeBaseContextForFile(rootPath: string, filePath: string): Promise<Partial<RouteContext>> {
+  const providerSource = await safeRead(path.join(rootPath, "app", "Providers", "RouteServiceProvider.php"));
+  const relativePath = path.relative(rootPath, filePath).split(path.sep).join("/");
+  const mountedContext = routeMountContext(providerSource, relativePath);
+
+  if (mountedContext) {
+    return mountedContext;
+  }
+
+  return {};
+}
+
+function routeMountContext(source: string, relativePath: string): Partial<RouteContext> | null {
+  const normalizedRelativePath = relativePath.replace(/^\/+/, "");
+
+  for (const match of source.matchAll(/Route::([\s\S]*?)->group\s*\(\s*base_path\(\s*['"]([^'"]+)['"]\s*\)\s*\)/g)) {
+    if (match[2].replace(/^\/+/, "") !== normalizedRelativePath) {
+      continue;
+    }
+
+    return parseRouteChainContext(`Route::${match[1]}`);
+  }
+
+  return null;
+}
+
 function isTranslationFile(filePath: string): boolean {
   return filePath.endsWith(".php") || filePath.endsWith(".json");
+}
+
+// Resolves module directories (`modules/`, `Modules/`) by their exact on-disk
+// names so case-insensitive filesystems do not yield the same tree twice.
+async function moduleDirectoryRoots(rootPath: string): Promise<string[]> {
+  try {
+    const entries = await readdir(rootPath, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory() && /^modules$/i.test(entry.name))
+      .map((entry) => path.join(rootPath, entry.name));
+  } catch {
+    return [];
+  }
 }
 
 async function walk(
@@ -2850,7 +3259,7 @@ function uniqueFacades(facades: FacadeInfo[]): FacadeInfo[] {
   const byClass = new Map<string, FacadeInfo>();
 
   for (const facade of facades) {
-    byClass.set(facade.className, facade);
+    byClass.set(facade.namespace ? `${facade.namespace}\\${facade.className}` : facade.className, facade);
   }
 
   return [...byClass.values()];

@@ -12,6 +12,8 @@ import {
   DidChangeWatchedFilesParams,
   Hover,
   HoverParams,
+  InlayHint,
+  InlayHintParams,
   InitializeParams,
   InitializeResult,
   Location,
@@ -30,6 +32,7 @@ import { completionsForDocument } from "./completions.js";
 import { diagnosticsForDocument } from "./diagnostics.js";
 import { definitionsForDocument } from "./definitions.js";
 import { hoverForDocument } from "./hovers.js";
+import { inlayHintsForDocument } from "./inlayHints.js";
 import { isLaravelProject } from "./laravelDetection.js";
 import {
   buildLaravelIndex,
@@ -72,6 +75,7 @@ connection.onInitialize(async (params: InitializeParams): Promise<InitializeResu
       definitionProvider: true,
       referencesProvider: true,
       hoverProvider: true,
+      inlayHintProvider: true,
       codeActionProvider: true,
       documentSymbolProvider: true,
       workspaceSymbolProvider: true,
@@ -124,12 +128,21 @@ connection.onHover((params: HoverParams): Hover | null => {
   return hoverForDocument(document, params.position, index);
 });
 
+connection.languages.inlayHint.on((params: InlayHintParams): InlayHint[] => {
+  const document = documents.get(params.textDocument.uri);
+  if (!document || !laravelProject) {
+    return [];
+  }
+
+  return inlayHintsForDocument(document, index);
+});
+
 connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
   if (!laravelProject) {
     return [];
   }
 
-  return codeActionsForDiagnostics(params, index, workspaceRoot);
+  return codeActionsForDiagnostics(params, index, workspaceRoot, documents.get(params.textDocument.uri));
 });
 
 connection.onDocumentSymbol((params: DocumentSymbolParams): DocumentSymbol[] => {
