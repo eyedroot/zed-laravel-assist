@@ -5,7 +5,7 @@ use zed_extension_api::{self as zed, LanguageServerId, Result};
 const SERVER_ID: &str = "laravel-assist";
 const SERVER_FILE_NAME: &str = "laravel-assist-server-v0.0.1.cjs";
 const SERVER_DOWNLOAD_URL: &str =
-    "https://github.com/eyedroot/zed-laravel-assist/releases/download/v0.0.1/laravel-assist-server.cjs";
+    "https://raw.githubusercontent.com/eyedroot/zed-laravel-assist/laravel-assist-server-v0.0.1/laravel-assist-server.cjs";
 
 struct LaravelAssistExtension {
     cached_server_script_path: Option<String>,

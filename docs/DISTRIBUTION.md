@@ -5,15 +5,15 @@ This document keeps release, local update, and registry-readiness checks in one 
 ## Language Server Runtime
 
 The language server lives in `server/` and builds to a single CommonJS bundle at `server/dist/index.cjs`.
-The Zed extension does not embed this bundle in `extension.wasm`. At runtime it downloads the versioned release asset from GitHub:
+The Zed extension does not embed this bundle in `extension.wasm`. At runtime it downloads the versioned server asset from GitHub:
 
 ```text
-https://github.com/eyedroot/zed-laravel-assist/releases/download/v0.0.1/laravel-assist-server.cjs
+https://raw.githubusercontent.com/eyedroot/zed-laravel-assist/laravel-assist-server-v0.0.1/laravel-assist-server.cjs
 ```
 
 This keeps the extension source aligned with Zed registry guidance for language-server extensions: the wasm adapter is built by Zed, while the language server is downloaded through the Zed extension API.
 
-Before creating a release asset:
+Before publishing a server asset:
 
 ```sh
 cd server
@@ -29,18 +29,17 @@ npm run pack:dry-run
 - `dist/index.cjs`
 - `package.json`
 
-Create or update the GitHub release only after the source commit has been pushed:
+Publish the generated server asset only after the source commit has been pushed. The current registry-compatible URL uses a dedicated branch that contains only the downloadable server bundle:
 
 ```sh
-gh release create v0.0.1 server/dist/index.cjs#laravel-assist-server.cjs \
-  --title "v0.0.1" \
-  --notes "Initial Laravel Assist language server release"
-```
-
-If the release already exists:
-
-```sh
-gh release upload v0.0.1 server/dist/index.cjs#laravel-assist-server.cjs --clobber
+tmpdir=$(mktemp -d)
+cd "$tmpdir"
+git init
+cp /path/to/zed-laravel-assist/server/dist/index.cjs laravel-assist-server.cjs
+git add laravel-assist-server.cjs
+git commit -m "Publish Laravel Assist server bundle v0.0.1"
+git remote add origin git@github.com-eyedroot:eyedroot/zed-laravel-assist.git
+git push origin HEAD:laravel-assist-server-v0.0.1
 ```
 
 Only run `npm publish` from `server/` if the project later decides to distribute the language server through npm as well.
@@ -59,7 +58,7 @@ The script performs the required sequence:
 2. Build the Zed extension for `wasm32-wasip2`.
 3. Copy the built wasm to `extension.wasm`.
 
-For local dev extension testing, the runtime server is still downloaded from the GitHub release URL baked into `src/lib.rs`. If you need to test unpublished language server changes in Zed, upload a prerelease asset or temporarily point the URL at a test release.
+For local dev extension testing, the runtime server is still downloaded from the GitHub URL baked into `src/lib.rs`. If you need to test unpublished language server changes in Zed, publish a temporary server-bundle branch or temporarily point the URL at a test asset.
 
 Then reload the development extension from Zed:
 
@@ -72,7 +71,7 @@ Then reload the development extension from Zed:
 Before submitting to the Zed extension registry:
 
 - `extension.toml` has stable `id`, `name`, `version`, `authors`, `description`, and `repository` fields.
-- `server/dist/index.cjs` is uploaded as the matching GitHub release asset.
+- `server/dist/index.cjs` is published as the matching downloadable server asset.
 - `cargo build --release --target wasm32-wasip2` succeeds.
 - `extension.wasm` is built from the same commit as `extension.toml`.
 - `README.md` includes install, settings, inlay hint, and local development instructions.

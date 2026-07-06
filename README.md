@@ -544,7 +544,7 @@ npm install
 npm run build
 ```
 
-This produces a single-file bundle at `server/dist/index.cjs`. Published Zed builds do not embed this bundle into `extension.wasm`; the Rust extension downloads the matching GitHub release asset at runtime through `zed_extension_api::download_file`.
+This produces a single-file bundle at `server/dist/index.cjs`. Published Zed builds do not embed this bundle into `extension.wasm`; the Rust extension downloads the matching GitHub-hosted server asset at runtime through `zed_extension_api::download_file`.
 
 At runtime the extension stores the downloaded bundle in its Zed work directory and launches it through Zed's bundled Node runtime:
 
@@ -552,7 +552,7 @@ At runtime the extension stores the downloaded bundle in its Zed work directory 
 <zed-work-dir>/laravel-assist-server-v0.0.1.cjs --stdio
 ```
 
-This is required because Zed extensions run in a WASI sandbox that can only access their own work directory, never the extension source checkout. After changing server code, rebuild the bundle and publish a matching release asset before expecting the registry extension to use it.
+This is required because Zed extensions run in a WASI sandbox that can only access their own work directory, never the extension source checkout. After changing server code, rebuild the bundle and publish a matching downloadable server asset before expecting the registry extension to use it.
 
 For the repeatable local update flow, run:
 

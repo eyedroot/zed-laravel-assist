@@ -19,7 +19,7 @@ npm install
 npm run build
 ```
 
-빌드 결과는 단일 번들 파일 `server/dist/index.cjs`입니다. 공개/registry용 확장 wasm은 이 번들을 직접 내장하지 않고, 런타임에 GitHub Release asset에서 `laravel-assist-server.cjs`를 다운로드합니다.
+빌드 결과는 단일 번들 파일 `server/dist/index.cjs`입니다. 공개/registry용 확장 wasm은 이 번들을 직접 내장하지 않고, 런타임에 GitHub에 게시된 `laravel-assist-server.cjs` 자산을 다운로드합니다.
 
 Zed 확장은 실행 시점에 다운로드한 번들을 자신의 작업 디렉터리에 저장한 뒤 다음과 같이 실행합니다.
 
@@ -110,7 +110,7 @@ cd /Users/eyedroot/Github/zed-laravel-assist
 
 그다음 Zed Command Palette에서 `zed: reload extensions`를 실행합니다. 개발 확장이 아직 설치되지 않은 상태라면 `zed: install dev extension`을 실행해 저장소 루트를 선택합니다.
 
-주의: 현재 registry 호환 구조에서는 Language Server가 `src/lib.rs`에 지정된 GitHub Release asset URL에서 다운로드됩니다. Zed에서 unpublished 서버 변경을 테스트하려면 임시 prerelease asset을 올리거나, 테스트용 release URL로 바꾼 뒤 다시 빌드해야 합니다.
+주의: 현재 registry 호환 구조에서는 Language Server가 `src/lib.rs`에 지정된 GitHub 다운로드 URL에서 내려받아집니다. Zed에서 unpublished 서버 변경을 테스트하려면 임시 서버 번들 브랜치를 올리거나, 테스트용 asset URL로 바꾼 뒤 다시 빌드해야 합니다.
 
 Zed가 이전 빌드 결과를 계속 사용하는 것처럼 보이면 다음 순서로 재시도합니다.
 
