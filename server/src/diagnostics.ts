@@ -1,6 +1,7 @@
 import { Diagnostic, DiagnosticSeverity } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { fileURLToPath } from "node:url";
+import { isKnownEloquentBuilderMethod } from "./instanceTypes.js";
 import { LaravelIndex, ValidationFieldInfo } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
 
@@ -145,7 +146,13 @@ export function diagnosticsForDocument(document: TextDocument, index: LaravelInd
 
     for (const scope of eloquentScopeContextsInLine(line)) {
       const model = findModel(index, scope.model ? resolvePhpClassReference(documentText, scope.model) : undefined);
-      if (model && !model.scopes.includes(scope.value) && !model.customBuilder?.methods.some((method) => method.name === scope.value)) {
+      if (
+        model &&
+        !model.scopes.includes(scope.value) &&
+        !model.staticMethods?.includes(scope.value) &&
+        !isKnownEloquentBuilderMethod(scope.value) &&
+        !model.customBuilder?.methods.some((method) => method.name === scope.value)
+      ) {
         diagnostics.push(unresolvedDiagnostic(lineIndex, scope, `Unknown Eloquent scope '${scope.model}.${scope.value}'.`));
       }
     }

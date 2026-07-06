@@ -1,7 +1,8 @@
 import { Location, Position, Range } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { LaravelIndex } from "./projectIndex.js";
+import { frameworkBuilderMethodTargetForPrefix, instanceMemberTargetForPrefix } from "./instanceTypes.js";
+import { LaravelIndex, SourceRange } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
 
 export function definitionsForDocument(
@@ -70,7 +71,22 @@ export function definitionsForDocument(
 
   const eloquentMethod = eloquentMethodContextAtPosition(document, position, index);
   if (eloquentMethod) {
-    return [Location.create(pathToFileURL(eloquentMethod.filePath).toString(), startRange())];
+    return [
+      Location.create(
+        pathToFileURL(eloquentMethod.filePath).toString(),
+        eloquentMethod.range ? { end: eloquentMethod.range.end, start: eloquentMethod.range.start } : startRange(),
+      ),
+    ];
+  }
+
+  const instanceMember = instanceMemberContextAtPosition(document, position, index);
+  if (instanceMember) {
+    return [
+      Location.create(
+        pathToFileURL(instanceMember.filePath).toString(),
+        instanceMember.range ? { end: instanceMember.range.end, start: instanceMember.range.start } : startRange(),
+      ),
+    ];
   }
 
   const context = stringContextAtPosition(document, position, index);
@@ -546,16 +562,18 @@ function eloquentMethodContextAtPosition(
   document: TextDocument,
   position: Position,
   index: LaravelIndex,
-): { filePath: string } | null {
+): { filePath: string; range?: SourceRange } | null {
   const line = document.getText().split(/\r?\n/)[position.line] ?? "";
   const token = tokenAtPosition(line, position.character);
   if (!token) {
     return null;
   }
 
+  const prefix = document.getText().slice(0, document.offsetAt({ line: position.line, character: token.start }));
   const modelName = eloquentScopeModel(line.slice(0, token.start));
   if (!modelName) {
-    return null;
+    const frameworkMethod = frameworkBuilderMethodTargetForPrefix(document.getText(), prefix, index, token.value);
+    return frameworkMethod ? { filePath: frameworkMethod.filePath, ...(frameworkMethod.range ? { range: frameworkMethod.range } : {}) } : null;
   }
 
   const resolvedModelName = resolvePhpClassReference(document.getText(), modelName);
@@ -567,7 +585,20 @@ function eloquentMethodContextAtPosition(
   }
 
   if (model.scopes.includes(token.value)) {
-    return { filePath: model.filePath };
+    const traitScope = model.scopeDetails?.find((detail) => detail.name === token.value);
+    if (traitScope) {
+      return { filePath: traitScope.filePath };
+    }
+
+    const scopeMethod = model.methodDetails?.find(
+      (method) => method.name === token.value || method.name === `scope${token.value[0].toUpperCase()}${token.value.slice(1)}`,
+    );
+    return { filePath: model.filePath, ...(scopeMethod ? { range: scopeMethod.range } : {}) };
+  }
+
+  if (model.staticMethods?.includes(token.value)) {
+    const staticMethod = model.methodDetails?.find((method) => method.name === token.value);
+    return { filePath: model.filePath, ...(staticMethod ? { range: staticMethod.range } : {}) };
   }
 
   const builderMethod = model.customBuilder?.methods.find((method) => method.name === token.value);
@@ -575,7 +606,26 @@ function eloquentMethodContextAtPosition(
     return { filePath: model.customBuilder.filePath };
   }
 
-  return null;
+  const frameworkMethod = frameworkBuilderMethodTargetForPrefix(document.getText(), prefix, index, token.value);
+  return frameworkMethod ? { filePath: frameworkMethod.filePath, ...(frameworkMethod.range ? { range: frameworkMethod.range } : {}) } : null;
+}
+
+// Resolves `$user->roles()` style member access when the receiver can be
+// traced to an Eloquent model (auth-user expressions, auth-user assignments,
+// or `@var` docblocks) and jumps to the member's declaration.
+function instanceMemberContextAtPosition(
+  document: TextDocument,
+  position: Position,
+  index: LaravelIndex,
+): ReturnType<typeof instanceMemberTargetForPrefix> {
+  const line = document.getText().split(/\r?\n/)[position.line] ?? "";
+  const token = tokenAtPosition(line, position.character);
+  if (!token) {
+    return null;
+  }
+
+  const prefix = document.getText().slice(0, document.offsetAt({ line: position.line, character: token.start }));
+  return instanceMemberTargetForPrefix(document.getText(), prefix, index, token.value);
 }
 
 function factoryStateContextAtPosition(

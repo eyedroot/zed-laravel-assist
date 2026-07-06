@@ -399,7 +399,18 @@ describe("project index extraction", () => {
       }
     `;
 
-    expect(extractModelInfo("/app/app/Models/User.php", source)).toEqual({
+    const info = extractModelInfo("/app/app/Models/User.php", source);
+    expect(info?.methodDetails?.map((method) => method.name)).toEqual([
+      "active",
+      "deployments",
+      "owner",
+      "posts",
+      "scopePopular",
+      "tags",
+    ]);
+
+    const { methodDetails: _methodDetails, ...rest } = info ?? {};
+    expect(rest).toEqual({
       className: "User",
       namespace: "App\\Models",
       casts: [],
@@ -432,6 +443,86 @@ describe("project index extraction", () => {
       scopes: ["active", "popular"],
       tableName: "users",
     });
+  });
+
+  it("extracts static methods and used traits from a model", () => {
+    const source = `
+      namespace App\\Models;
+
+      use App\\Models\\Concerns\\HasReferenceScope;
+      use Illuminate\\Database\\Eloquent\\Model;
+
+      class GlobalValue extends Model
+      {
+          use HasReferenceScope;
+
+          public static function getValueByContentProviderId(string $key, int $contentProviderId)
+          {
+              return static::query()->where('key', $key)->first();
+          }
+
+          protected static function booted(): void
+          {
+          }
+
+          public function scopeActive($query): void
+          {
+          }
+      }
+    `;
+
+    const info = extractModelInfo("/app/app/Models/GlobalValue.php", source);
+    expect(info?.staticMethods).toEqual(["booted", "getValueByContentProviderId"]);
+    expect(info?.usedTraits).toEqual(["App\\Models\\Concerns\\HasReferenceScope"]);
+    expect(info?.scopes).toEqual(["active"]);
+  });
+
+  it("extracts scope metadata from trait files", () => {
+    const source = `
+      namespace App\\Models\\Concerns;
+
+      trait HasReferenceScope
+      {
+          public function scopeForReference($query)
+          {
+              return $query->select('id', 'name');
+          }
+      }
+    `;
+
+    const info = extractModelInfo("/app/app/Models/Concerns/HasReferenceScope.php", source);
+    expect(info?.methodDetails?.map((method) => method.name)).toEqual(["scopeForReference"]);
+
+    const { methodDetails: _methodDetails, ...rest } = info ?? {};
+    expect(rest).toEqual({
+      casts: [],
+      className: "HasReferenceScope",
+      filePath: "/app/app/Models/Concerns/HasReferenceScope.php",
+      fillable: [],
+      guarded: [],
+      isTrait: true,
+      namespace: "App\\Models\\Concerns",
+      relations: [],
+      relationships: [],
+      scopes: ["forReference"],
+      tableName: "",
+    });
+  });
+
+  it("ignores traits without scopes, static methods, or nested traits", () => {
+    const source = `
+      namespace App\\Models\\Concerns;
+
+      trait Timestamps
+      {
+          public function touchQuietly(): bool
+          {
+              return true;
+          }
+      }
+    `;
+
+    expect(extractModelInfo("/app/app/Models/Concerns/Timestamps.php", source)).toBeNull();
   });
 
   it("extracts custom Eloquent builder metadata", () => {
@@ -1235,6 +1326,86 @@ describe("project index extraction", () => {
         source: "inline",
       },
     ]);
+  });
+
+  it("captures class values for config entries", () => {
+    const source = [
+      "<?php",
+      "return [",
+      "    'providers' => [",
+      "        'users' => [",
+      "            'driver' => 'eloquent',",
+      "            'model' => App\\Kollus\\Models\\User::class,",
+      "        ],",
+      "    ],",
+      "];",
+    ].join("\n");
+
+    expect(extractConfigKeyInfo("/app/config/auth.php", source)).toContainEqual(
+      expect.objectContaining({
+        key: "auth.providers.users.model",
+        value: "App\\Kollus\\Models\\User",
+      }),
+    );
+  });
+
+  it("merges trait scopes and static methods into consuming models", async () => {
+    const rootPath = await mkdtemp(path.join(os.tmpdir(), "laravel-assist-"));
+
+    try {
+      await mkdir(path.join(rootPath, "app", "Models", "Concerns"), { recursive: true });
+      await mkdir(path.join(rootPath, "config"), { recursive: true });
+      await writeFile(
+        path.join(rootPath, "config", "auth.php"),
+        "<?php return ['providers' => ['users' => ['model' => App\\Models\\GlobalValue::class]]];",
+      );
+      await writeFile(
+        path.join(rootPath, "app", "Models", "GlobalValue.php"),
+        [
+          "<?php",
+          "namespace App\\Models;",
+          "use App\\Models\\Concerns\\HasReferenceScope;",
+          "class GlobalValue extends Model",
+          "{",
+          "    use HasReferenceScope;",
+          "    public static function getValueByContentProviderId(string $key, int $contentProviderId) {}",
+          "    public function scopeActive($query): void {}",
+          "}",
+        ].join("\n"),
+      );
+      await writeFile(
+        path.join(rootPath, "app", "Models", "Concerns", "HasReferenceScope.php"),
+        [
+          "<?php",
+          "namespace App\\Models\\Concerns;",
+          "trait HasReferenceScope",
+          "{",
+          "    public function scopeForReference($query) { return $query; }",
+          "    public static function sharedHelper(): bool { return true; }",
+          "}",
+        ].join("\n"),
+      );
+
+      const { index } = await buildLaravelIndex(rootPath);
+      expect(index.authUserModel).toBe("App\\Models\\GlobalValue");
+
+      const model = index.models.find((candidate) => candidate.className === "GlobalValue");
+      expect(model?.scopes).toEqual(["active", "forReference"]);
+      expect(model?.methodDetails?.map((method) => method.name)).toEqual([
+        "getValueByContentProviderId",
+        "scopeActive",
+      ]);
+      expect(model?.staticMethods).toEqual(["getValueByContentProviderId", "sharedHelper"]);
+      expect(model?.scopeDetails).toEqual([
+        {
+          filePath: path.join(rootPath, "app", "Models", "Concerns", "HasReferenceScope.php"),
+          name: "forReference",
+        },
+      ]);
+      expect(index.models.some((candidate) => candidate.className === "HasReferenceScope")).toBe(false);
+    } finally {
+      await rm(rootPath, { force: true, recursive: true });
+    }
   });
 
   it("reuses unchanged file indexes and reindexes changed files", async () => {

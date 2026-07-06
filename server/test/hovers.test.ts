@@ -293,6 +293,68 @@ describe("Laravel hovers", () => {
     });
   });
 
+  it("shows Laravel relation method metadata in authenticated user chains", () => {
+    const source = [
+      "<?php",
+      "$user = Auth::user();",
+      "$userRole = $user->roles()",
+      "    ->wherePivotIn('role_id', $roles->pluck('id'))",
+      "    ->first();",
+    ].join("\n");
+    const document = TextDocument.create(
+      "file:///app/app/Http/Middleware/RoleMiddleware.php",
+      "php",
+      1,
+      source,
+    );
+
+    expect(hoverForDocument(document, { line: 3, character: 8 }, indexFixture)).toEqual({
+      contents: {
+        kind: "markdown",
+        value:
+          "**Laravel relation method** `BelongsToMany.wherePivotIn`\n- Relation: `User.roles`\n- File: `/app/vendor/laravel/framework/src/Illuminate/Database/Eloquent/Relations/BelongsToMany.php`",
+      },
+    });
+  });
+
+  it("shows Laravel builder method metadata in static model chains", () => {
+    const whereNullDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\nUser::whereNull('email')->get();",
+    );
+    const chainDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "return User::where('email', $email)",
+        "    ->where('id', $id)",
+        "    ->when($id, function ($query, $id) {",
+        "        return $query->where('id', $id);",
+        "    })",
+        "    ->max('id');",
+      ].join("\n"),
+    );
+
+    expect(hoverForDocument(whereNullDocument, { line: 1, character: 8 }, indexFixture)).toEqual({
+      contents: {
+        kind: "markdown",
+        value:
+          "**Eloquent builder method** `Builder.whereNull`\n- Model: `User`\n- File: `/app/vendor/laravel/framework/src/Illuminate/Database/Query/Builder.php`",
+      },
+    });
+    expect(hoverForDocument(chainDocument, { line: 6, character: 8 }, indexFixture)).toEqual({
+      contents: {
+        kind: "markdown",
+        value:
+          "**Eloquent builder method** `Builder.max`\n- Model: `User`\n- File: `/app/vendor/laravel/framework/src/Illuminate/Database/Query/Builder.php`",
+      },
+    });
+  });
+
   it("shows schema table and column metadata inside validation Rule calls", () => {
     const source = "<?php\nRule::exists('users', 'email')";
     const line = source.split("\n")[1];
@@ -746,8 +808,13 @@ const indexFixture: LaravelIndex = {
           relatedModel: "Post",
           type: "hasMany",
         },
+        {
+          name: "roles",
+          relatedModel: "Role",
+          type: "belongsToMany",
+        },
       ],
-      relationships: ["posts"],
+      relationships: ["posts", "roles"],
       scopes: ["active"],
       tableName: "users",
     },

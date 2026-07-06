@@ -1,9 +1,12 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
+import { resolvePhpClassReference } from "./phpResolver.js";
 
-export const LARAVEL_INDEX_CACHE_VERSION = 30;
+export const LARAVEL_INDEX_CACHE_VERSION = 32;
 
 export interface LaravelIndex {
+  // FQN configured at `auth.providers.users.model`, when the project sets one.
+  authUserModel: string | null;
   authorization: AuthorizationInfo[];
   bladeComponents: BladeComponentInfo[];
   bladeViews: BladeViewInfo[];
@@ -38,15 +41,32 @@ export interface ModelInfo {
   className: string;
   customBuilder?: ModelCustomBuilderInfo;
   casts: string[];
+  isTrait?: boolean;
   namespace: string | null;
   filePath: string;
   fillable: string[];
   guarded: string[];
+  methodDetails?: ModelMethodInfo[];
   relations: ModelRelationInfo[];
   relationships: string[];
+  scopeDetails?: ModelScopeInfo[];
   scopes: string[];
+  staticMethods?: string[];
   tableName: string;
+  usedTraits?: string[];
   usesSoftDeletes?: boolean;
+}
+
+// Scopes merged in from traits keep their declaring file so navigation and
+// hovers can point at the trait instead of the model class.
+export interface ModelScopeInfo {
+  filePath: string;
+  name: string;
+}
+
+export interface ModelMethodInfo {
+  name: string;
+  range: SourceRange;
 }
 
 export interface ModelAccessorInfo {
@@ -174,6 +194,9 @@ export interface ConfigKeyInfo {
   filePath: string;
   key: string;
   range: SourceRange;
+  // Class referenced by the entry value (`Foo::class`), when present. Lets the
+  // index answer questions like which model backs `auth.providers.users.model`.
+  value?: string;
 }
 
 export interface EnvKeyInfo {
@@ -439,6 +462,7 @@ export interface LaravelIndexBuildOptions {
 
 export function emptyIndex(): LaravelIndex {
   return {
+    authUserModel: null,
     authorization: [],
     artifacts: [],
     bladeComponents: [],
@@ -634,6 +658,7 @@ export function indexFromCache(cache: LaravelIndexCache): LaravelIndex {
   const uniqueBindings = sortBy(uniqueContainerBindings(containerBindings), (binding) => binding.abstract);
 
   return {
+    authUserModel: configEntries.find((entry) => entry.key === "auth.providers.users.model")?.value ?? null,
     authorization: sortBy(uniqueAuthorization(authorization), (auth) => auth.ability),
     artifacts: sortBy(uniqueArtifacts(artifacts), (artifact) => `${artifact.kind}:${artifact.className}`),
     bladeComponents: mergeBladeComponents([...bladeComponentsFromViews(bladeViews), ...bladeComponents]),
@@ -654,7 +679,7 @@ export function indexFromCache(cache: LaravelIndexCache): LaravelIndex {
     ),
     macros: sortBy(uniqueMacros(macros), (macro) => `${macro.className}:${macro.method}`),
     middleware: sortBy(uniqueMiddleware(middleware), (entry) => entry.alias),
-    models: sortBy(resolveCustomModelBuilders(models), (model) => model.className),
+    models: sortBy(resolveCustomModelBuilders(applyModelTraits(models)), (model) => model.className),
     providers: sortBy(resolveServiceProviderClasses(providers), (provider) => provider.className),
     schemaTables: mergeSchemaTables(schemaTables),
     seeders: sortBy(uniqueSeeders(seeders), (seeder) => seeder.className),
@@ -1218,7 +1243,9 @@ export function extractConfigKeyInfo(fileName: string, source: string): ConfigKe
     collectConfigArrayKeys(source, arrayStart + 1, [baseName], entries, fileName);
   }
 
-  return sortBy(uniqueConfigEntries(entries), (entry) => entry.key);
+  return sortBy(uniqueConfigEntries(entries), (entry) => entry.key).map((entry) =>
+    entry.value ? { ...entry, value: resolvePhpClassReference(source, entry.value) } : entry,
+  );
 }
 
 function configRootArrayStart(source: string): number {
@@ -1266,18 +1293,24 @@ function collectConfigArrayKeys(
 
     index = skipConfigInsignificant(source, index + 2);
     const nextPrefix = [...prefix, parsedKey.value];
-    entries.push({
+    const entry: ConfigKeyInfo = {
       filePath,
       key: nextPrefix.join("."),
       range: sourceRangeForOffset(source, parsedKey.end - parsedKey.value.length - 1, parsedKey.value.length),
-    });
+    };
+    entries.push(entry);
 
     if (source[index] === "[") {
       index = collectConfigArrayKeys(source, index + 1, nextPrefix, entries, filePath);
       continue;
     }
 
-    index = skipConfigValue(source, index);
+    const valueEnd = skipConfigValue(source, index);
+    const classValue = /\\?([A-Za-z_][A-Za-z0-9_\\]*)::class/.exec(source.slice(index, valueEnd))?.[1];
+    if (classValue) {
+      entry.value = classValue;
+    }
+    index = valueEnd;
   }
 
   return index;
@@ -1406,12 +1439,15 @@ export function extractEnvKeyInfo(filePath: string, source: string): EnvKeyInfo[
 export function extractModelInfo(filePath: string, source: string): ModelInfo | null {
   const className = phpClassName(source);
   if (!className) {
-    return null;
+    return extractTraitInfo(filePath, source);
   }
 
   const relations = extractModelRelations(source);
   const customBuilderClass = extractCustomBuilderClass(source);
   const builderMethods = extractModelBuilderMethods(source);
+  const staticMethods = extractStaticMethods(source);
+  const usedTraits = extractClassBodyTraits(source);
+  const methodDetails = extractMethodDetails(source);
 
   const accessorDetails = extractModelAccessors(source);
   const castDetails = extractModelCasts(source);
@@ -1438,11 +1474,49 @@ export function extractModelInfo(filePath: string, source: string): ModelInfo | 
     filePath,
     fillable: extractStringArrayProperty(source, "fillable"),
     guarded: extractStringArrayProperty(source, "guarded"),
+    ...(methodDetails.length > 0 ? { methodDetails } : {}),
     relations,
     relationships: relations.map((relation) => relation.name),
     scopes: extractModelScopes(source),
+    ...(staticMethods.length > 0 ? { staticMethods } : {}),
     tableName: extractModelTableName(className, source),
+    ...(usedTraits.length > 0 ? { usedTraits } : {}),
     ...(modelUsesSoftDeletes(source) ? { usesSoftDeletes: true } : {}),
+  };
+}
+
+// Traits share the model scan so `scope*` helpers and static methods declared
+// in `use`d traits can be merged into their consuming models later.
+function extractTraitInfo(filePath: string, source: string): ModelInfo | null {
+  const traitName = /\btrait\s+([A-Za-z_][A-Za-z0-9_]*)\b/.exec(source)?.[1] ?? null;
+  if (!traitName) {
+    return null;
+  }
+
+  const scopes = extractModelScopes(source);
+  const staticMethods = extractStaticMethods(source);
+  const usedTraits = extractClassBodyTraits(source);
+  if (scopes.length === 0 && staticMethods.length === 0 && usedTraits.length === 0) {
+    return null;
+  }
+
+  const methodDetails = extractMethodDetails(source);
+
+  return {
+    casts: [],
+    className: traitName,
+    filePath,
+    fillable: [],
+    guarded: [],
+    isTrait: true,
+    ...(methodDetails.length > 0 ? { methodDetails } : {}),
+    namespace: phpNamespace(source),
+    relations: [],
+    relationships: [],
+    scopes,
+    ...(staticMethods.length > 0 ? { staticMethods } : {}),
+    tableName: "",
+    ...(usedTraits.length > 0 ? { usedTraits } : {}),
   };
 }
 
@@ -1630,6 +1704,65 @@ function extractModelScopes(source: string): string[] {
   return uniqueSorted([...scopes]);
 }
 
+// Static methods declared on a model are called with the same `Model::name()`
+// syntax as dynamic scope forwarding, so they must be indexed to avoid
+// misreporting them as unknown scopes.
+function extractStaticMethods(source: string): string[] {
+  const methods = new Set<string>();
+
+  for (const match of source.matchAll(/((?:\b(?:abstract|final|private|protected|public|static)\s+)+)function\s+&?([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+    if (/\bstatic\b/.test(match[1]) && !match[2].startsWith("__")) {
+      methods.add(match[2]);
+    }
+  }
+
+  return uniqueSorted([...methods]);
+}
+
+// Records every named method declaration with its position so navigation can
+// jump to the method instead of the top of the file.
+function extractMethodDetails(source: string): ModelMethodInfo[] {
+  const methods = new Map<string, ModelMethodInfo>();
+
+  for (const match of source.matchAll(/\bfunction\s+&?([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+    const name = match[1];
+    if (name.startsWith("__") || methods.has(name)) {
+      continue;
+    }
+
+    const nameOffset = (match.index ?? 0) + match[0].lastIndexOf(name);
+    methods.set(name, {
+      name,
+      range: sourceRangeForOffset(source, nameOffset, name.length),
+    });
+  }
+
+  return sortBy([...methods.values()], (method) => method.name);
+}
+
+// Collects `use TraitName;` statements inside a class or trait body, resolved
+// against the file's imports. Closure `function () use ($x)` captures never
+// match because they follow `)` and reference `$`-prefixed variables.
+function extractClassBodyTraits(source: string): string[] {
+  const declaration = /\b(?:class|trait)\s+[A-Za-z_][A-Za-z0-9_]*[^{]*\{/.exec(source);
+  if (!declaration) {
+    return [];
+  }
+
+  // Only the header before the declaration feeds import resolution; class-body
+  // `use Trait;` statements would otherwise shadow the file's imports.
+  const header = source.slice(0, declaration.index);
+  const body = source.slice(declaration.index + declaration[0].length);
+  const traits = new Set<string>();
+  for (const match of body.matchAll(/(?:^|[;{}\n])\s*use\s+([A-Za-z_\\][A-Za-z0-9_\\]*(?:\s*,\s*[A-Za-z_\\][A-Za-z0-9_\\]*)*)\s*(?:;|\{)/g)) {
+    for (const name of match[1].split(",")) {
+      traits.add(resolvePhpClassReference(header, name.trim()));
+    }
+  }
+
+  return uniqueSorted([...traits]);
+}
+
 function phpClassName(source: string): string | null {
   return /\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\b/.exec(source)?.[1] ?? null;
 }
@@ -1675,6 +1808,73 @@ function namespaceFromClassReference(classReference: string): string | null {
   }
 
   return segments.slice(0, -1).join("\\");
+}
+
+// Merges `scope*` methods and static methods declared in `use`d traits into
+// their consuming models, so trait-provided scopes behave like ones declared
+// on the model class itself. Trait entries are consumed here and do not stay
+// in the final model list.
+function applyModelTraits(models: ModelInfo[]): ModelInfo[] {
+  const classModels = models.filter((model) => !model.isTrait);
+  const traitByName = new Map<string, ModelInfo>();
+
+  for (const trait of models) {
+    if (!trait.isTrait) {
+      continue;
+    }
+
+    traitByName.set(trait.className, trait);
+    if (trait.namespace) {
+      traitByName.set(`${trait.namespace}\\${trait.className}`, trait);
+    }
+  }
+
+  if (traitByName.size === 0) {
+    return classModels;
+  }
+
+  return classModels.map((model) => {
+    const members = collectTraitMembers(model.usedTraits, traitByName);
+    if (members.scopes.length === 0 && members.staticMethods.length === 0) {
+      return model;
+    }
+
+    const scopeDetails = members.scopes.filter((scope) => !model.scopes.includes(scope.name));
+    const staticMethods = uniqueSorted([...(model.staticMethods ?? []), ...members.staticMethods]);
+
+    return {
+      ...model,
+      ...(scopeDetails.length > 0 ? { scopeDetails } : {}),
+      scopes: uniqueSorted([...model.scopes, ...members.scopes.map((scope) => scope.name)]),
+      ...(staticMethods.length > 0 ? { staticMethods } : {}),
+    };
+  });
+}
+
+function collectTraitMembers(
+  usedTraits: string[] | undefined,
+  traitByName: Map<string, ModelInfo>,
+  visited: Set<string> = new Set(),
+): { scopes: ModelScopeInfo[]; staticMethods: string[] } {
+  const scopes: ModelScopeInfo[] = [];
+  const staticMethods: string[] = [];
+
+  for (const reference of usedTraits ?? []) {
+    const trait = traitByName.get(reference) ?? traitByName.get(reference.split("\\").at(-1) ?? reference);
+    if (!trait || visited.has(trait.filePath)) {
+      continue;
+    }
+
+    visited.add(trait.filePath);
+    scopes.push(...trait.scopes.map((name) => ({ filePath: trait.filePath, name })));
+    staticMethods.push(...(trait.staticMethods ?? []));
+
+    const nested = collectTraitMembers(trait.usedTraits, traitByName, visited);
+    scopes.push(...nested.scopes);
+    staticMethods.push(...nested.staticMethods);
+  }
+
+  return { scopes, staticMethods };
 }
 
 function resolveCustomModelBuilders(models: ModelInfo[]): ModelInfo[] {

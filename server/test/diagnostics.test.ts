@@ -151,6 +151,41 @@ describe("Laravel diagnostics", () => {
     expect(diagnosticsForDocument(document, indexFixture)).toEqual([]);
   });
 
+  it("does not report static model methods or trait scopes as unknown scopes", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "User::getValueByKey('use_content_encryption');",
+        "User::forReference()->get();",
+      ].join("\n"),
+    );
+
+    expect(diagnosticsForDocument(document, indexFixture)).toEqual([]);
+  });
+
+  it("does not report Laravel builder methods as unknown Eloquent scopes", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "User::whereNull('email')->get();",
+        "User::where('email', $email)",
+        "    ->where('id', $id)",
+        "    ->when($id, function ($query, $id) {",
+        "        return $query->where('id', $id);",
+        "    })",
+        "    ->max('id');",
+      ].join("\n"),
+    );
+
+    expect(diagnosticsForDocument(document, indexFixture)).toEqual([]);
+  });
+
   it("reports unresolved Blade sections for the extended layout", () => {
     const document = TextDocument.create(
       "file:///app/resources/views/users/index.blade.php",
@@ -632,7 +667,14 @@ const indexFixture: LaravelIndex = {
         },
       ],
       relationships: ["posts"],
-      scopes: ["active"],
+      scopeDetails: [
+        {
+          filePath: "/app/app/Models/Concerns/HasReferenceScope.php",
+          name: "forReference",
+        },
+      ],
+      scopes: ["active", "forReference"],
+      staticMethods: ["getValueByKey"],
       tableName: "users",
     },
   ],

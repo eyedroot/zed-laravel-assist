@@ -238,8 +238,10 @@ function allCandidates(data: LaravelDiagnosticData, index: LaravelIndex): string
       return index.providers
         .filter((provider) => provider.source === "class")
         .map((provider) => provider.namespace ? `${provider.namespace}\\${provider.className}` : provider.className);
-    case "scope":
-      return data.model ? (findModel(index, data.model)?.scopes ?? []) : [];
+    case "scope": {
+      const model = data.model ? findModel(index, data.model) : null;
+      return model ? uniqueSorted([...model.scopes, ...(model.staticMethods ?? [])]) : [];
+    }
     case "translation":
       return index.translationKeys.map((translation) => translation.key);
     case "validationField":

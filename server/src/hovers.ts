@@ -1,6 +1,7 @@
 import { Hover, MarkupKind, Position } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { fileURLToPath } from "node:url";
+import { frameworkBuilderMethodTargetForPrefix, instanceMemberTargetForPrefix } from "./instanceTypes.js";
 import { LaravelIndex } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
 
@@ -127,10 +128,11 @@ export function hoverForDocument(
 
   const eloquentMethod = eloquentMethodContextAtPosition(document, position, index);
   if (eloquentMethod?.kind === "scope") {
+    const traitScope = eloquentMethod.model.scopeDetails?.find((detail) => detail.name === eloquentMethod.scope);
     return markdownHover([
       `**Eloquent scope** \`${eloquentMethod.model.className}.${eloquentMethod.scope}\``,
       `- Table: \`${eloquentMethod.model.tableName}\``,
-      `- File: \`${eloquentMethod.model.filePath}\``,
+      `- File: \`${traitScope?.filePath ?? eloquentMethod.model.filePath}\``,
     ]);
   }
   if (eloquentMethod?.kind === "builderMethod") {
@@ -139,6 +141,38 @@ export function hoverForDocument(
       `- Builder: \`${eloquentMethod.builder.className}\``,
       eloquentMethod.method.returnType ? `- Returns: \`${eloquentMethod.method.returnType}\`` : "",
       eloquentMethod.builder.filePath ? `- File: \`${eloquentMethod.builder.filePath}\`` : "",
+    ]);
+  }
+  if (eloquentMethod?.kind === "framework") {
+    return markdownHover([
+      `**Eloquent builder method** \`${eloquentMethod.className.split("\\").at(-1)}.${eloquentMethod.name}\``,
+      `- Model: \`${eloquentMethod.model.className}\``,
+      `- File: \`${eloquentMethod.filePath}\``,
+    ]);
+  }
+
+  const instanceMember = instanceMemberHoverAtPosition(document, position, index);
+  if (instanceMember) {
+    const relation = instanceMember.model.relations.find((candidate) => candidate.name === instanceMember.name);
+    if (relation) {
+      return markdownHover([
+        `**Eloquent relation** \`${instanceMember.model.className}.${relation.name}\``,
+        `- Type: \`${relation.type}\``,
+        relation.relatedModel ? `- Related: \`${relation.relatedModel}\`` : "",
+        `- File: \`${instanceMember.filePath}\``,
+      ]);
+    }
+
+    return markdownHover([
+      instanceMember.kind === "framework"
+        ? `**Laravel relation method** \`${instanceMember.className?.split("\\").at(-1) ?? "Relation"}.${instanceMember.name}\``
+        : instanceMember.kind === "scope"
+        ? `**Eloquent scope** \`${instanceMember.model.className}.${instanceMember.name}\``
+        : `**Model method** \`${instanceMember.model.className}.${instanceMember.name}\``,
+      instanceMember.relation
+        ? `- Relation: \`${instanceMember.model.className}.${instanceMember.relation.name}\``
+        : "",
+      `- File: \`${instanceMember.filePath}\``,
     ]);
   }
 
@@ -670,6 +704,7 @@ function eloquentMethodContextAtPosition(
   index: LaravelIndex,
 ):
   | { kind: "builderMethod"; builder: NonNullable<LaravelIndex["models"][number]["customBuilder"]>; method: NonNullable<LaravelIndex["models"][number]["customBuilder"]>["methods"][number]; model: LaravelIndex["models"][number] }
+  | { className: string; filePath: string; kind: "framework"; model: LaravelIndex["models"][number]; name: string }
   | { kind: "scope"; model: LaravelIndex["models"][number]; scope: string }
   | null {
   const line = document.getText().split(/\r?\n/)[position.line] ?? "";
@@ -678,9 +713,19 @@ function eloquentMethodContextAtPosition(
     return null;
   }
 
+  const prefix = document.getText().slice(0, document.offsetAt({ line: position.line, character: token.start }));
   const modelName = eloquentScopeModel(line.slice(0, token.start));
   if (!modelName) {
-    return null;
+    const frameworkMethod = frameworkBuilderMethodTargetForPrefix(document.getText(), prefix, index, token.value);
+    return frameworkMethod?.className
+      ? {
+          className: frameworkMethod.className,
+          filePath: frameworkMethod.filePath,
+          kind: "framework",
+          model: frameworkMethod.model,
+          name: frameworkMethod.name,
+        }
+      : null;
   }
 
   const resolvedModelName = resolvePhpClassReference(document.getText(), modelName);
@@ -696,9 +741,35 @@ function eloquentMethodContextAtPosition(
   }
 
   const builderMethod = model.customBuilder?.methods.find((method) => method.name === token.value);
-  return builderMethod && model.customBuilder
-    ? { builder: model.customBuilder, kind: "builderMethod", method: builderMethod, model }
+  if (builderMethod && model.customBuilder) {
+    return { builder: model.customBuilder, kind: "builderMethod", method: builderMethod, model };
+  }
+
+  const frameworkMethod = frameworkBuilderMethodTargetForPrefix(document.getText(), prefix, index, token.value);
+  return frameworkMethod?.className
+    ? {
+        className: frameworkMethod.className,
+        filePath: frameworkMethod.filePath,
+        kind: "framework",
+        model: frameworkMethod.model,
+        name: frameworkMethod.name,
+      }
     : null;
+}
+
+function instanceMemberHoverAtPosition(
+  document: TextDocument,
+  position: Position,
+  index: LaravelIndex,
+): ReturnType<typeof instanceMemberTargetForPrefix> {
+  const line = document.getText().split(/\r?\n/)[position.line] ?? "";
+  const token = tokenAtPosition(line, position.character);
+  if (!token) {
+    return null;
+  }
+
+  const prefix = document.getText().slice(0, document.offsetAt({ line: position.line, character: token.start }));
+  return instanceMemberTargetForPrefix(document.getText(), prefix, index, token.value);
 }
 
 function factoryStateContextAtPosition(

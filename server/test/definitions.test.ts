@@ -376,6 +376,129 @@ describe("Laravel definitions", () => {
     ]);
   });
 
+  it("resolves Laravel builder methods in static model chains", () => {
+    const whereNullDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\nUser::whereNull('email')->get();",
+    );
+    const chainDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "return User::where('email', $email)",
+        "    ->where('id', $id)",
+        "    ->when($id, function ($query, $id) {",
+        "        return $query->where('id', $id);",
+        "    })",
+        "    ->max('id');",
+      ].join("\n"),
+    );
+
+    expect(definitionsForDocument(whereNullDocument, { line: 1, character: 8 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/vendor/laravel/framework/src/Illuminate/Database/Query/Builder.php",
+      },
+    ]);
+    expect(definitionsForDocument(chainDocument, { line: 3, character: 8 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/vendor/laravel/framework/src/Illuminate/Support/Traits/Conditionable.php",
+      },
+    ]);
+    expect(definitionsForDocument(chainDocument, { line: 6, character: 8 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/vendor/laravel/framework/src/Illuminate/Database/Query/Builder.php",
+      },
+    ]);
+  });
+
+  it("resolves model members accessed through the authenticated user", () => {
+    const assignedDocument = TextDocument.create(
+      "file:///app/app/Http/Middleware/RoleMiddleware.php",
+      "php",
+      1,
+      ["<?php", "$user = Auth::user();", "$userRole = $user->posts()->first();"].join("\n"),
+    );
+    const chainedDocument = TextDocument.create(
+      "file:///app/app/Http/Middleware/RoleMiddleware.php",
+      "php",
+      1,
+      "<?php\nAuth::user()->posts;",
+    );
+    const docblockDocument = TextDocument.create(
+      "file:///app/app/Http/Middleware/RoleMiddleware.php",
+      "php",
+      1,
+      ["<?php", "/** @var \\App\\Models\\User $member */", "$member->posts();"].join("\n"),
+    );
+
+    const expected = [
+      {
+        range: {
+          end: { character: 28, line: 42 },
+          start: { character: 24, line: 42 },
+        },
+        uri: "file:///app/app/Models/User.php",
+      },
+    ];
+
+    expect(definitionsForDocument(assignedDocument, { line: 2, character: 20 }, indexFixture)).toEqual(expected);
+    expect(definitionsForDocument(chainedDocument, { line: 1, character: 15 }, indexFixture)).toEqual(expected);
+    expect(definitionsForDocument(docblockDocument, { line: 2, character: 10 }, indexFixture)).toEqual(expected);
+  });
+
+  it("resolves Laravel relation methods in authenticated user chains", () => {
+    const source = [
+      "<?php",
+      "$user = Auth::user();",
+      "$userRole = $user->roles()",
+      "    ->wherePivotIn('role_id', $roles->pluck('id'))",
+      "    ->first();",
+    ].join("\n");
+    const document = TextDocument.create(
+      "file:///app/app/Http/Middleware/RoleMiddleware.php",
+      "php",
+      1,
+      source,
+    );
+
+    expect(definitionsForDocument(document, { line: 3, character: 8 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/vendor/laravel/framework/src/Illuminate/Database/Eloquent/Relations/BelongsToMany.php",
+      },
+    ]);
+  });
+
+  it("does not resolve members of untyped variables", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Middleware/RoleMiddleware.php",
+      "php",
+      1,
+      "<?php\n$mystery->posts();",
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 11 }, indexFixture)).toEqual([]);
+  });
+
   it("resolves factory state definitions", () => {
     const document = TextDocument.create(
       "file:///app/database/seeders/DatabaseSeeder.php",
@@ -694,6 +817,7 @@ describe("Laravel definitions", () => {
 
 const indexFixture: LaravelIndex = {
   ...emptyIndex(),
+  authUserModel: "App\\Models\\User",
   bladeComponents: [
     {
       filePath: "/app/app/View/Components/Forms/Input.php",
@@ -852,6 +976,16 @@ const indexFixture: LaravelIndex = {
       filePath: "/app/app/Models/User.php",
       fillable: ["email"],
       guarded: [],
+      methodDetails: [
+        {
+          name: "posts",
+          range: { end: { character: 28, line: 42 }, start: { character: 24, line: 42 } },
+        },
+        {
+          name: "roles",
+          range: { end: { character: 28, line: 48 }, start: { character: 24, line: 48 } },
+        },
+      ],
       namespace: "App\\Models",
       relations: [
         {
@@ -859,8 +993,13 @@ const indexFixture: LaravelIndex = {
           relatedModel: "Post",
           type: "hasMany",
         },
+        {
+          name: "roles",
+          relatedModel: "Role",
+          type: "belongsToMany",
+        },
       ],
-      relationships: ["posts"],
+      relationships: ["posts", "roles"],
       scopes: ["active"],
       tableName: "users",
     },

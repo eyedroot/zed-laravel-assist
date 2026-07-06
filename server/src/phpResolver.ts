@@ -4,7 +4,16 @@ export function resolvePhpClassReference(source: string, classReference: string)
     return normalized;
   }
 
-  return phpImports(source).get(normalized) ?? normalized;
+  const imported = phpImports(source).get(normalized);
+  if (imported) {
+    return imported;
+  }
+
+  // PHP resolves unqualified, non-imported names against the file's own
+  // namespace, so same-namespace references (no `use` statement) must not be
+  // left as bare names that could match an unrelated class elsewhere.
+  const namespace = /\bnamespace\s+([^;{\s]+)/.exec(source)?.[1];
+  return namespace ? `${namespace}\\${normalized}` : normalized;
 }
 
 function phpImports(source: string): Map<string, string> {
