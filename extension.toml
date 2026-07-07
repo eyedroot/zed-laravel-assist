@@ -3,7 +3,7 @@ name = "Laravel Assist"
 version = "0.0.1"
 schema_version = 1
 authors = ["eyedroot <eyedroot@gmail.com>"]
-description = "Laravel-aware IDE support for Zed."
+description = "Laravel-aware IDE intelligence for Zed: routes, Blade, Eloquent, config, validation, Livewire, Inertia, and container navigation. ⚡"
 repository = "https://github.com/eyedroot/zed-laravel-assist"
 
 [language_servers.laravel-assist]
