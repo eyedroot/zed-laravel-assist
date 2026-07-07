@@ -1,5 +1,7 @@
 import { Location, Position, Range } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { frameworkBuilderMethodTargetForPrefix, instanceMemberTargetForPrefix, instanceModelForPrefix } from "./instanceTypes.js";
 import { LaravelIndex, SourceRange } from "./projectIndex.js";
@@ -79,6 +81,16 @@ export function definitionsForDocument(
   const factoryState = factoryStateContextAtPosition(document, position, index);
   if (factoryState) {
     return [Location.create(pathToFileURL(factoryState.filePath).toString(), startRange())];
+  }
+
+  const applicationMethod = applicationMethodContextAtPosition(document, position);
+  if (applicationMethod) {
+    return [
+      Location.create(
+        pathToFileURL(applicationMethod.filePath).toString(),
+        applicationMethod.range ? { end: applicationMethod.range.end, start: applicationMethod.range.start } : startRange(),
+      ),
+    ];
   }
 
   const eloquentMethod = eloquentMethodContextAtPosition(document, position, index);
@@ -715,6 +727,35 @@ function eloquentMethodContextAtPosition(
   return frameworkMethod ? { filePath: frameworkMethod.filePath, ...(frameworkMethod.range ? { range: frameworkMethod.range } : {}) } : null;
 }
 
+function applicationMethodContextAtPosition(
+  document: TextDocument,
+  position: Position,
+): { filePath: string; range?: SourceRange } | null {
+  const line = document.getText().split(/\r?\n/)[position.line] ?? "";
+  const token = tokenAtPosition(line, position.character);
+  if (!token) {
+    return null;
+  }
+
+  if (!/\bapp\s*\(\s*\)\s*(?:->|\?->)\s*$/.test(line.slice(0, token.start))) {
+    return null;
+  }
+
+  const documentPath = documentPathFromUri(document.uri);
+  const rootPath = documentPath ? projectRootForDocumentPath(documentPath) : null;
+  if (!rootPath) {
+    return null;
+  }
+
+  const filePath = path.join(rootPath, "vendor", "laravel", "framework", "src", "Illuminate", "Foundation", "Application.php");
+  const range = methodRangeInFile(filePath, token.value);
+  if (range) {
+    return { filePath, range };
+  }
+
+  return knownApplicationMethods().has(token.value) ? { filePath } : null;
+}
+
 // Resolves `$user->roles()` style member access when the receiver can be
 // traced to an Eloquent model (auth-user expressions, auth-user assignments,
 // or `@var` docblocks) and jumps to the member's declaration.
@@ -1165,6 +1206,10 @@ function normalizeClassReference(value: string): string {
   return value.replace(/\\\\/g, "\\").replace(/^\\+/, "");
 }
 
+function knownApplicationMethods(): Set<string> {
+  return new Set(["getFallbackLocale", "getLocale", "setLocale"]);
+}
+
 function isClassLikeReference(value: string): boolean {
   return /^[A-Z_\\][A-Za-z0-9_\\]*$/.test(value);
 }
@@ -1288,6 +1333,60 @@ function documentPathFromUri(uri: string): string | null {
   } catch {
     return null;
   }
+}
+
+function projectRootForDocumentPath(filePath: string): string | null {
+  for (const marker of [
+    `${path.sep}app${path.sep}`,
+    `${path.sep}routes${path.sep}`,
+    `${path.sep}config${path.sep}`,
+    `${path.sep}database${path.sep}`,
+    `${path.sep}resources${path.sep}`,
+  ]) {
+    const markerIndex = filePath.lastIndexOf(marker);
+    if (markerIndex >= 0) {
+      return filePath.slice(0, markerIndex) || path.sep;
+    }
+  }
+
+  return null;
+}
+
+function methodRangeInFile(filePath: string, method: string): SourceRange | null {
+  if (!existsSync(filePath)) {
+    return null;
+  }
+
+  try {
+    const source = readFileSync(filePath, "utf8");
+    const match = new RegExp(`\\bfunction\\s+&?${escapeRegExp(method)}\\s*\\(`).exec(source);
+    if (!match) {
+      return null;
+    }
+
+    const nameOffset = match.index + match[0].indexOf(method);
+    return sourceRangeForOffset(source, nameOffset, method.length);
+  } catch {
+    return null;
+  }
+}
+
+function sourceRangeForOffset(source: string, offset: number, length: number): SourceRange {
+  const start = sourcePositionForOffset(source, offset);
+  const end = sourcePositionForOffset(source, offset + length);
+  return { end, start };
+}
+
+function sourcePositionForOffset(source: string, offset: number): SourceRange["start"] {
+  const lines = source.slice(0, offset).split(/\r?\n/);
+  return {
+    character: lines.at(-1)?.length ?? 0,
+    line: lines.length - 1,
+  };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function definitionKindForPrefix(prefix: string): DefinitionSimpleKind | null {

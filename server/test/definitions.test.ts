@@ -594,6 +594,25 @@ describe("Laravel definitions", () => {
     ]);
   });
 
+  it("resolves Laravel application helper method definitions", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Middleware/SetLocalePerUser.php",
+      "php",
+      1,
+      "<?php\napp()->getFallbackLocale();",
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 11 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/vendor/laravel/framework/src/Illuminate/Foundation/Application.php",
+      },
+    ]);
+  });
+
   it("resolves Laravel relation methods in authenticated user chains", () => {
     const source = [
       "<?php",
