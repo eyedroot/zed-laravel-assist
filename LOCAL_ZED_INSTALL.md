@@ -21,7 +21,7 @@ npm run build
 
 빌드 결과는 단일 번들 파일 `server/dist/index.cjs`입니다. 공개/registry용 확장 wasm은 이 번들을 직접 내장하지 않고, 런타임에 GitHub에 게시된 `laravel-assist-server.cjs` 자산을 다운로드합니다.
 
-Zed 확장은 실행 시점에 다운로드한 번들을 자신의 작업 디렉터리에 저장한 뒤 다음과 같이 실행합니다.
+Zed 확장은 실행 시점에 다운로드하거나 개발 스크립트가 복사한 번들을 자신의 작업 디렉터리에 저장한 뒤 다음과 같이 실행합니다.
 
 ```text
 <zed 확장 작업 디렉터리>/laravel-assist-server-v0.0.1.cjs --stdio
@@ -110,7 +110,11 @@ cd /Users/eyedroot/Github/zed-laravel-assist
 
 그다음 Zed Command Palette에서 `zed: reload extensions`를 실행합니다. 개발 확장이 아직 설치되지 않은 상태라면 `zed: install dev extension`을 실행해 저장소 루트를 선택합니다.
 
-주의: 현재 registry 호환 구조에서는 Language Server가 `src/lib.rs`에 지정된 GitHub 다운로드 URL에서 내려받아집니다. Zed에서 unpublished 서버 변경을 테스트하려면 임시 서버 번들 브랜치를 올리거나, 테스트용 asset URL로 바꾼 뒤 다시 빌드해야 합니다.
+개발 스크립트는 `server/dist/index.cjs`를 기본 Zed work 디렉터리의 `laravel-assist-server-v0.0.1.cjs`로 복사합니다. 다른 Zed 데이터 디렉터리를 쓰는 경우 `ZED_EXTENSION_WORK_DIR` 환경변수로 대상 경로를 지정할 수 있습니다.
+
+이 저장소의 `.zed/settings.json`은 PHP에서 `laravel-assist`가 다른 PHP language server보다 먼저 응답하도록 설정합니다. 사용자 전역 설정이 다르더라도 이 저장소를 열 때는 프로젝트 설정이 우선 적용됩니다.
+
+Cmd+Click이 다른 PHP language server 결과를 먼저 열 때는 커서가 생성자 DI 인터페이스 타입힌트 위에 있는 상태에서 Code Actions를 열고 `Open Laravel concrete binding: ...`을 선택하면 Laravel Assist가 인덱싱한 구현체 파일을 직접 엽니다.
 
 Zed가 이전 빌드 결과를 계속 사용하는 것처럼 보이면 다음 순서로 재시도합니다.
 

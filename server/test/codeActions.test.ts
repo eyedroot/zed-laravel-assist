@@ -1,7 +1,7 @@
 import { CodeActionParams, DiagnosticSeverity } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { describe, expect, it } from "vitest";
-import { codeActionsForDiagnostics } from "../src/codeActions.js";
+import { codeActionsForDiagnostics, OPEN_CONCRETE_BINDING_COMMAND } from "../src/codeActions.js";
 import { emptyIndex, LaravelIndex } from "../src/projectIndex.js";
 
 describe("Laravel code actions", () => {
@@ -63,6 +63,83 @@ describe("Laravel code actions", () => {
         },
         kind: "quickfix",
         title: "Type-narrow Auth::user() as App\\Kollus\\Models\\User",
+      },
+    ]);
+  });
+
+  it("suggests an explicit action to open container-bound concrete implementations", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Services/WorkspaceUsageService.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "namespace App\\Services;",
+        "use App\\Contracts\\ReportServerInterface;",
+        "class WorkspaceUsageService",
+        "{",
+        "    public function __construct(",
+        "        private readonly ReportServerInterface $reportServer,",
+        "    ) {}",
+        "}",
+      ].join("\n"),
+    );
+    const params: CodeActionParams = {
+      context: {
+        diagnostics: [],
+      },
+      range: {
+        end: { character: 34, line: 6 },
+        start: { character: 34, line: 6 },
+      },
+      textDocument: {
+        uri: document.uri,
+      },
+    };
+    const index: LaravelIndex = {
+      ...indexFixture,
+      containerBindings: [
+        {
+          abstract: "App\\Contracts\\ReportServerInterface",
+          concrete: "App\\Services\\ReportServerLibrary",
+          filePath: "/app/app/Kollus/Providers/LibraryServiceProvider.php",
+          lifetime: "bind",
+        },
+      ],
+      models: [
+        ...indexFixture.models,
+        {
+          casts: [],
+          className: "ReportServerLibrary",
+          filePath: "/app/app/Services/ReportServerLibrary.php",
+          fillable: [],
+          guarded: [],
+          namespace: "App\\Services",
+          relations: [],
+          relationships: [],
+          scopes: [],
+          tableName: "report_server_libraries",
+        },
+      ],
+    };
+
+    expect(codeActionsForDiagnostics(params, index, null, document)).toEqual([
+      {
+        command: {
+          arguments: [
+            {
+              selection: {
+                end: { character: 0, line: 0 },
+                start: { character: 0, line: 0 },
+              },
+              uri: "file:///app/app/Services/ReportServerLibrary.php",
+            },
+          ],
+          command: OPEN_CONCRETE_BINDING_COMMAND,
+          title: "Open Laravel concrete binding: ReportServerLibrary",
+        },
+        kind: "refactor",
+        title: "Open Laravel concrete binding: ReportServerLibrary",
       },
     ]);
   });

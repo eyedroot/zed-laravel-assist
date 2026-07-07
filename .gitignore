@@ -7,6 +7,8 @@ dist/
 coverage/
 *.log
 .zed/
+!.zed/
+!.zed/settings.json
 .env
 .env.*
 !.env.example

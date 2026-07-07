@@ -12,9 +12,19 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { LaravelDiagnosticData } from "./diagnostics.js";
 import { LaravelIndex } from "./projectIndex.js";
+import { resolvePhpClassReference } from "./phpResolver.js";
 
 const MAX_QUICK_FIXES_PER_DIAGNOSTIC = 5;
 const EMPTY_BLADE_FILE = "";
+export const OPEN_CONCRETE_BINDING_COMMAND = "laravelAssist.openConcreteBinding";
+
+export interface OpenConcreteBindingCommandArgs {
+  selection: {
+    end: { character: number; line: number };
+    start: { character: number; line: number };
+  };
+  uri: string;
+}
 
 export function codeActionsForDiagnostics(
   params: CodeActionParams,
@@ -23,6 +33,10 @@ export function codeActionsForDiagnostics(
   document?: TextDocument,
 ): CodeAction[] {
   const actions: CodeAction[] = [];
+  const concreteBindingAction = document ? openConcreteBindingAction(params, index, document) : null;
+  if (concreteBindingAction) {
+    actions.push(concreteBindingAction);
+  }
 
   for (const diagnostic of params.context.diagnostics) {
     const authUserAction = authUserTypeNarrowingAction(params, diagnostic, document);
@@ -57,6 +71,62 @@ export function codeActionsForDiagnostics(
   actions.push(...modelGenerationActions(params, index, workspaceRoot));
 
   return actions;
+}
+
+function openConcreteBindingAction(
+  params: CodeActionParams,
+  index: LaravelIndex,
+  document: TextDocument,
+): CodeAction | null {
+  const target = concreteBindingTargetAtRange(document, params.range, index);
+  if (!target) {
+    return null;
+  }
+
+  const concreteName = target.className.split("\\").at(-1) ?? target.className;
+  return {
+    command: {
+      arguments: [
+        {
+          selection: {
+            end: { character: 0, line: 0 },
+            start: { character: 0, line: 0 },
+          },
+          uri: pathToFileURL(target.filePath).toString(),
+        } satisfies OpenConcreteBindingCommandArgs,
+      ],
+      command: OPEN_CONCRETE_BINDING_COMMAND,
+      title: `Open Laravel concrete binding: ${concreteName}`,
+    },
+    kind: CodeActionKind.Refactor,
+    title: `Open Laravel concrete binding: ${concreteName}`,
+  };
+}
+
+function concreteBindingTargetAtRange(
+  document: TextDocument,
+  range: CodeActionParams["range"],
+  index: LaravelIndex,
+): { className: string; filePath: string } | null {
+  const line = document.getText({
+    start: { character: 0, line: range.start.line },
+    end: { character: Number.MAX_SAFE_INTEGER, line: range.start.line },
+  });
+  const reference = classReferenceAtRange(line, range.start.character, range.end.character);
+  if (!reference || !isPhpParameterTypeHint(line, reference)) {
+    return null;
+  }
+
+  const resolvedReference = resolvePhpClassReference(document.getText(), reference.value);
+  const binding = index.containerBindings.find((candidate) =>
+    classReferenceMatches(candidate.abstract, resolvedReference)
+  );
+  if (!binding?.concrete) {
+    return null;
+  }
+
+  const target = indexedClassTarget(binding.concrete, index);
+  return target ? { className: target.className, filePath: target.filePath } : null;
 }
 
 function authUserTypeNarrowingAction(
@@ -776,6 +846,70 @@ function pathFromUri(uri: string): string | null {
   } catch {
     return null;
   }
+}
+
+function classReferenceAtRange(
+  line: string,
+  startCharacter: number,
+  endCharacter: number,
+): { start: number; value: string } | null {
+  const effectiveEnd = Math.max(startCharacter, endCharacter);
+  for (const match of line.matchAll(/\b([A-Za-z_\\][A-Za-z0-9_\\]*)\b/g)) {
+    const start = match.index ?? 0;
+    const end = start + match[1].length;
+    const cursorInsideToken = startCharacter >= start && startCharacter <= end;
+    const rangeOverlapsToken = startCharacter <= end && effectiveEnd >= start;
+    if (cursorInsideToken || rangeOverlapsToken) {
+      return { start, value: match[1] };
+    }
+  }
+
+  return null;
+}
+
+function isPhpParameterTypeHint(
+  line: string,
+  reference: { start: number; value: string },
+): boolean {
+  const prefix = line.slice(0, reference.start);
+  const suffix = line.slice(reference.start + reference.value.length);
+  return /(?:^|[(,|&])\s*(?:(?:public|protected|private|readonly|static)\s+)*\??\s*$/.test(prefix) &&
+    /^\s+\$[A-Za-z_][A-Za-z0-9_]*/.test(suffix);
+}
+
+function indexedClassTarget(
+  classReference: string,
+  index: LaravelIndex,
+): { className: string; filePath: string } | null {
+  const candidates = [
+    ...index.models,
+    ...index.controllers,
+    ...index.artifacts,
+    ...index.livewireComponents,
+  ];
+
+  return candidates.find((candidate) =>
+    classReferenceMatches(indexedClassReference(candidate), classReference)
+  ) ?? null;
+}
+
+function indexedClassReference(candidate: {
+  className: string;
+  namespace: string | null;
+}): string {
+  return candidate.namespace ? `${candidate.namespace}\\${candidate.className}` : candidate.className;
+}
+
+function classReferenceMatches(indexedReference: string, value: string): boolean {
+  const indexed = normalizeClassReference(indexedReference);
+  const compared = normalizeClassReference(value);
+  return indexed === compared ||
+    indexed.split("\\").at(-1) === compared ||
+    compared.split("\\").at(-1) === indexed;
+}
+
+function normalizeClassReference(value: string): string {
+  return value.replace(/\\\\/g, "\\").replace(/^\\+/, "");
 }
 
 function candidateScore(candidate: string, value: string): number {

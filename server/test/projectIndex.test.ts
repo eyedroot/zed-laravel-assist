@@ -31,6 +31,7 @@ import {
   extractValidationRules,
   indexFileKindForPath,
 } from "../src/projectIndex.js";
+import { resolvePhpClassReference } from "../src/phpResolver.js";
 
 describe("project index extraction", () => {
   it("extracts Blade view graph metadata", () => {
@@ -741,6 +742,9 @@ describe("project index extraction", () => {
           {
               $this->app->singleton(ReportService::class, DatabaseReportService::class);
               $this->app->bind('billing.gateway', StripeGateway::class);
+              $this->app->bind(ReportServer\\ReportServerInterface::class, function () {
+                  return new ReportServer\\ReportServerLibrary($httpManager);
+              });
               app()->scoped(CacheWarmer::class);
           }
       }
@@ -760,12 +764,82 @@ describe("project index extraction", () => {
         lifetime: "scoped",
       },
       {
+        abstract: "ReportServer\\ReportServerInterface",
+        concrete: "ReportServer\\ReportServerLibrary",
+        filePath: "/app/app/Providers/AppServiceProvider.php",
+        lifetime: "bind",
+      },
+      {
         abstract: "ReportService",
         concrete: "DatabaseReportService",
         filePath: "/app/app/Providers/AppServiceProvider.php",
         lifetime: "singleton",
       },
     ]);
+  });
+
+  it("resolves namespace import prefixes in service container bindings", () => {
+    const source = `
+      namespace App\\Kollus\\Providers;
+
+      use App\\Kollus\\Libraries\\ReportServer;
+
+      class LibraryServiceProvider extends ServiceProvider
+      {
+          public function register(): void
+          {
+              $this->app->bind(ReportServer\\ReportServerInterface::class, function () {
+                  return new ReportServer\\ReportServerLibrary($httpManager);
+              });
+          }
+      }
+    `;
+
+    expect(resolvePhpClassReference(source, "ReportServer\\ReportServerInterface")).toBe(
+      "App\\Kollus\\Libraries\\ReportServer\\ReportServerInterface",
+    );
+    expect(extractContainerBindings("/app/app/Kollus/Providers/LibraryServiceProvider.php", source)).toEqual([
+      {
+        abstract: "App\\Kollus\\Libraries\\ReportServer\\ReportServerInterface",
+        concrete: "App\\Kollus\\Libraries\\ReportServer\\ReportServerLibrary",
+        filePath: "/app/app/Kollus/Providers/LibraryServiceProvider.php",
+        lifetime: "bind",
+      },
+    ]);
+  });
+
+  it("indexes service container bindings from nested service provider directories", async () => {
+    const rootPath = await mkdtemp(path.join(os.tmpdir(), "laravel-assist-nested-provider-"));
+
+    try {
+      await mkdir(path.join(rootPath, "app", "Kollus", "Providers"), { recursive: true });
+      await writeFile(
+        path.join(rootPath, "app", "Kollus", "Providers", "LibraryServiceProvider.php"),
+        [
+          "<?php",
+          "namespace App\\Kollus\\Providers;",
+          "use App\\Kollus\\Libraries\\ReportServer;",
+          "class LibraryServiceProvider extends ServiceProvider {",
+          "  public function register(): void {",
+          "    $this->app->bind(ReportServer\\ReportServerInterface::class, function () {",
+          "      return new ReportServer\\ReportServerLibrary($httpManager);",
+          "    });",
+          "  }",
+          "}",
+        ].join("\n"),
+      );
+
+      const { index } = await buildLaravelIndex(rootPath);
+
+      expect(index.containerBindings).toContainEqual({
+        abstract: "App\\Kollus\\Libraries\\ReportServer\\ReportServerInterface",
+        concrete: "App\\Kollus\\Libraries\\ReportServer\\ReportServerLibrary",
+        filePath: path.join(rootPath, "app", "Kollus", "Providers", "LibraryServiceProvider.php"),
+        lifetime: "bind",
+      });
+    } finally {
+      await rm(rootPath, { force: true, recursive: true });
+    }
   });
 
   it("extracts controller actions", () => {

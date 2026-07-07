@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { resolvePhpClassReference } from "./phpResolver.js";
 
-export const LARAVEL_INDEX_CACHE_VERSION = 35;
+export const LARAVEL_INDEX_CACHE_VERSION = 37;
 
 export interface LaravelIndex {
   // FQN configured at `auth.providers.users.model`, when the project sets one.
@@ -2033,22 +2033,38 @@ export function extractContainerBindings(filePath: string, source: string): Cont
   const bindings: ContainerBindingInfo[] = [];
   const bindingRegex =
     /(?:\$this->app|app\(\)|App::getFacadeRoot\(\))->(bind|singleton|scoped|instance)\(\s*([^,\)]+)(?:,\s*([^\)]+))?\)/g;
+  const closureBindingRegex =
+    /(?:\$this->app|app\(\)|App::getFacadeRoot\(\))->(bind|singleton|scoped|instance)\(\s*([^,\)]+)\s*,\s*function\s*\([^)]*\)\s*(?::\s*[A-Za-z_\\][A-Za-z0-9_\\]*)?\s*\{([\s\S]*?)\}\s*\)/g;
 
   for (const match of source.matchAll(bindingRegex)) {
-    const abstract = serviceReference(match[2]);
+    const abstract = resolvedServiceReference(source, match[2]);
     if (!abstract) {
       continue;
     }
 
     bindings.push({
       abstract,
-      concrete: serviceReference(match[3]),
+      concrete: resolvedServiceReference(source, match[3]),
       filePath,
       lifetime: match[1] as ContainerBindingInfo["lifetime"],
     });
   }
 
-  return sortBy(bindings, (binding) => binding.abstract);
+  for (const match of source.matchAll(closureBindingRegex)) {
+    const abstract = resolvedServiceReference(source, match[2]);
+    if (!abstract) {
+      continue;
+    }
+
+    bindings.push({
+      abstract,
+      concrete: resolvedClassLikeReference(source, newInstanceReference(match[3])),
+      filePath,
+      lifetime: match[1] as ContainerBindingInfo["lifetime"],
+    });
+  }
+
+  return sortBy(uniqueContainerBindings(bindings), (binding) => binding.abstract);
 }
 
 export function extractControllerInfo(filePath: string, source: string): ControllerInfo[] {
@@ -2631,6 +2647,31 @@ function serviceReference(source: string | undefined): string | null {
   return stringLiteral(source);
 }
 
+function resolvedServiceReference(documentSource: string, referenceSource: string | undefined): string | null {
+  const reference = serviceReference(referenceSource);
+  return resolvedClassLikeReference(documentSource, reference);
+}
+
+function resolvedClassLikeReference(documentSource: string, reference: string | null): string | null {
+  if (!reference || !isClassLikeReference(reference)) {
+    return reference;
+  }
+
+  return resolvePhpClassReference(documentSource, reference);
+}
+
+function isClassLikeReference(value: string): boolean {
+  return /^[A-Z_\\][A-Za-z0-9_\\]*$/.test(value);
+}
+
+function newInstanceReference(source: string | undefined): string | null {
+  if (!source) {
+    return null;
+  }
+
+  return /\breturn\s+new\s+([A-Za-z_\\][A-Za-z0-9_\\]*)\b/.exec(source)?.[1] ?? null;
+}
+
 function extractJsonTranslationKeys(
   filePath: string,
   source: string,
@@ -2935,6 +2976,9 @@ async function collectIndexFileCandidates(rootPath: string): Promise<IndexFileCa
     addFiles("container", path.join(rootPath, "app", "Providers"), (filePath) =>
       filePath.endsWith(".php"),
     ),
+    addFiles("container", path.join(rootPath, "app"), (filePath) =>
+      filePath.endsWith("ServiceProvider.php"),
+    ),
     addFiles("controller", path.join(rootPath, "app", "Http", "Controllers"), (filePath) =>
       filePath.endsWith(".php"),
     ),
@@ -2959,6 +3003,9 @@ async function collectIndexFileCandidates(rootPath: string): Promise<IndexFileCa
     ),
     addFiles("provider", path.join(rootPath, "app", "Providers"), (filePath) =>
       filePath.endsWith(".php"),
+    ),
+    addFiles("provider", path.join(rootPath, "app"), (filePath) =>
+      filePath.endsWith("ServiceProvider.php"),
     ),
     addFiles("route", path.join(rootPath, "routes"), (filePath) => filePath.endsWith(".php")),
     addFiles("route", rootPath, (filePath) => path.basename(filePath) === "router.php"),
@@ -3153,6 +3200,9 @@ function indexFileKindsForPath(rootPath: string, filePath: string): LaravelIndex
     }
     if (relativePath.startsWith(path.join("app", "Providers") + path.sep)) {
       kinds.push("authorization", "container", "provider");
+    }
+    if (filePath.endsWith("ServiceProvider.php")) {
+      kinds.push("container", "provider");
     }
     if (relativePath.startsWith(path.join("app", "Policies") + path.sep)) {
       kinds.push("authorization");

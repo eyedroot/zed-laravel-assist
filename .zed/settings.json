@@ -1,0 +1,7 @@
+{
+  "languages": {
+    "PHP": {
+      "language_servers": ["laravel-assist", "intelephense", "!phpactor", "!phptools", "..."]
+    }
+  }
+}

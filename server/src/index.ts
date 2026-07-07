@@ -7,6 +7,7 @@ import {
   createConnection,
   Definition,
   DefinitionParams,
+  ExecuteCommandParams,
   DocumentSymbol,
   DocumentSymbolParams,
   DidChangeWatchedFilesParams,
@@ -27,7 +28,7 @@ import { TextDocument } from "vscode-languageserver-textdocument";
 import { fileURLToPath } from "node:url";
 import { TextDocuments } from "vscode-languageserver/node.js";
 import { loadLaravelIndexCache, saveLaravelIndexCache } from "./cacheStore.js";
-import { codeActionsForDiagnostics } from "./codeActions.js";
+import { codeActionsForDiagnostics, OPEN_CONCRETE_BINDING_COMMAND, OpenConcreteBindingCommandArgs } from "./codeActions.js";
 import { completionsForDocument } from "./completions.js";
 import { diagnosticsForDocument } from "./diagnostics.js";
 import { definitionsForDocument } from "./definitions.js";
@@ -77,6 +78,9 @@ connection.onInitialize(async (params: InitializeParams): Promise<InitializeResu
       hoverProvider: true,
       inlayHintProvider: true,
       codeActionProvider: true,
+      executeCommandProvider: {
+        commands: [OPEN_CONCRETE_BINDING_COMMAND],
+      },
       documentSymbolProvider: true,
       workspaceSymbolProvider: true,
       workspace: {
@@ -143,6 +147,24 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
   }
 
   return codeActionsForDiagnostics(params, index, workspaceRoot, documents.get(params.textDocument.uri));
+});
+
+connection.onExecuteCommand(async (params: ExecuteCommandParams) => {
+  if (params.command !== OPEN_CONCRETE_BINDING_COMMAND) {
+    return null;
+  }
+
+  const args = params.arguments?.[0] as Partial<OpenConcreteBindingCommandArgs> | undefined;
+  if (!args?.uri || !args.selection) {
+    return null;
+  }
+
+  await connection.window.showDocument({
+    selection: args.selection,
+    takeFocus: true,
+    uri: args.uri,
+  });
+  return null;
 });
 
 connection.onDocumentSymbol((params: DocumentSymbolParams): DocumentSymbol[] => {

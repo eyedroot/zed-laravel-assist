@@ -1,10 +1,17 @@
 export function resolvePhpClassReference(source: string, classReference: string): string {
   const normalized = classReference.replace(/^\\/, "");
-  if (normalized.includes("\\")) {
+  if (classReference.startsWith("\\")) {
     return normalized;
   }
 
-  const imported = phpImports(source).get(normalized);
+  const imports = phpImports(source);
+  if (normalized.includes("\\")) {
+    const [head, ...tail] = normalized.split("\\");
+    const importedHead = imports.get(head);
+    return importedHead && tail.length > 0 ? `${importedHead}\\${tail.join("\\")}` : normalized;
+  }
+
+  const imported = imports.get(normalized);
   if (imported) {
     return imported;
   }

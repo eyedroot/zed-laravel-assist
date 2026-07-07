@@ -56,6 +56,11 @@ export function definitionsForDocument(
     return [Location.create(pathToFileURL(facade.filePath).toString(), startRange())];
   }
 
+  const containerConcrete = containerConcreteClassContextAtPosition(document, position, index);
+  if (containerConcrete) {
+    return [Location.create(pathToFileURL(containerConcrete.filePath).toString(), startRange())];
+  }
+
   const artifact = artifactClassContextAtPosition(document, position, index);
   if (artifact) {
     return [Location.create(pathToFileURL(artifact.filePath).toString(), startRange())];
@@ -581,6 +586,28 @@ function facadeStaticCallContextAtPosition(
   return facade ? { filePath: facade.filePath } : null;
 }
 
+function containerConcreteClassContextAtPosition(
+  document: TextDocument,
+  position: Position,
+  index: LaravelIndex,
+): { filePath: string } | null {
+  const line = document.getText().split(/\r?\n/)[position.line] ?? "";
+  const reference = classReferenceAtPosition(line, position.character);
+  if (!reference || !isPhpParameterTypeHint(line, reference)) {
+    return null;
+  }
+
+  const resolvedReference = resolvePhpClassReference(document.getText(), reference.value);
+  const binding = index.containerBindings.find((candidate) =>
+    containerAbstractMatchesClass(candidate.abstract, resolvedReference)
+  );
+  if (!binding?.concrete) {
+    return null;
+  }
+
+  return indexedClassTarget(binding.concrete, index);
+}
+
 function stringContextAtPosition(
   document: TextDocument,
   position: Position,
@@ -1093,6 +1120,63 @@ function macroStaticCallClass(prefix: string): string | null {
 
 function classNameMatches(indexedClassName: string, value: string): boolean {
   return indexedClassName === value || indexedClassName.split("\\").at(-1) === value || value.split("\\").at(-1) === indexedClassName;
+}
+
+function containerAbstractMatchesClass(abstract: string, value: string): boolean {
+  if (!isClassLikeReference(abstract)) {
+    return false;
+  }
+
+  return classReferenceMatches(abstract, value);
+}
+
+function indexedClassTarget(
+  classReference: string,
+  index: LaravelIndex,
+): { filePath: string } | null {
+  const candidates = [
+    ...index.models,
+    ...index.controllers,
+    ...index.artifacts,
+    ...index.livewireComponents,
+  ];
+
+  return candidates.find((candidate) =>
+    classReferenceMatches(indexedClassReference(candidate), classReference)
+  ) ?? null;
+}
+
+function indexedClassReference(candidate: {
+  className: string;
+  namespace: string | null;
+}): string {
+  return candidate.namespace ? `${candidate.namespace}\\${candidate.className}` : candidate.className;
+}
+
+function classReferenceMatches(indexedReference: string, value: string): boolean {
+  const indexed = normalizeClassReference(indexedReference);
+  const compared = normalizeClassReference(value);
+  return indexed === compared ||
+    indexed.split("\\").at(-1) === compared ||
+    compared.split("\\").at(-1) === indexed;
+}
+
+function normalizeClassReference(value: string): string {
+  return value.replace(/\\\\/g, "\\").replace(/^\\+/, "");
+}
+
+function isClassLikeReference(value: string): boolean {
+  return /^[A-Z_\\][A-Za-z0-9_\\]*$/.test(value);
+}
+
+function isPhpParameterTypeHint(
+  line: string,
+  reference: { start: number; value: string },
+): boolean {
+  const prefix = line.slice(0, reference.start);
+  const suffix = line.slice(reference.start + reference.value.length);
+  return /(?:^|[(,|&])\s*(?:(?:public|protected|private|readonly|static)\s+)*\??\s*$/.test(prefix) &&
+    /^\s+\$[A-Za-z_][A-Za-z0-9_]*/.test(suffix);
 }
 
 function artifactMatches(artifact: LaravelIndex["artifacts"][number], value: string): boolean {

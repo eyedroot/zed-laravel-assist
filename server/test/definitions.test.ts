@@ -784,6 +784,62 @@ describe("Laravel definitions", () => {
     ]);
   });
 
+  it("resolves container-bound constructor interface type hints to concrete classes", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Services/WorkspaceUsageService.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "namespace App\\Services;",
+        "use App\\Contracts\\ReportServerInterface;",
+        "class WorkspaceUsageService",
+        "{",
+        "    public function __construct(",
+        "        private readonly ReportServerInterface $reportServer,",
+        "    ) {}",
+        "}",
+      ].join("\n"),
+    );
+    const index: LaravelIndex = {
+      ...indexFixture,
+      containerBindings: [
+        ...indexFixture.containerBindings,
+        {
+          abstract: "App\\Contracts\\ReportServerInterface",
+          concrete: "App\\Services\\ReportServerLibrary",
+          filePath: "/app/app/Kollus/Providers/LibraryServiceProvider.php",
+          lifetime: "singleton",
+        },
+      ],
+      models: [
+        ...indexFixture.models,
+        {
+          casts: [],
+          className: "ReportServerLibrary",
+          filePath: "/app/app/Services/ReportServerLibrary.php",
+          fillable: [],
+          guarded: [],
+          namespace: "App\\Services",
+          relations: [],
+          relationships: [],
+          scopes: [],
+          tableName: "report_server_libraries",
+        },
+      ],
+    };
+
+    expect(definitionsForDocument(document, { line: 6, character: 34 }, index)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/Services/ReportServerLibrary.php",
+      },
+    ]);
+  });
+
   it("resolves service provider registration definitions", () => {
     const document = TextDocument.create(
       "file:///app/bootstrap/providers.php",
