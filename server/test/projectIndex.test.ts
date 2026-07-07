@@ -17,6 +17,7 @@ import {
   extractFactoryInfo,
   extractFacadeInfo,
   extractInertiaPageInfo,
+  extractLivewireComponentInfo,
   extractLaravelArtifacts,
   extractMacroInfo,
   extractMiddlewareInfo,
@@ -1638,6 +1639,43 @@ describe("project index extraction", () => {
       filePath: "/app/resources/js/Pages/Dashboard.svelte",
       name: "Dashboard",
     });
+  });
+
+  it("extracts Livewire components with kebab-case names, properties, and actions", () => {
+    const source = [
+      "<?php",
+      "namespace App\\Livewire\\Users;",
+      "use Livewire\\Component;",
+      "class ShowPost extends Component",
+      "{",
+      "    public int $userId = 0;",
+      "    public $search = '';",
+      "    public static $shared = [];",
+      "    public function mount(): void {}",
+      "    public function render() {}",
+      "    public function updatedSearch(): void {}",
+      "    public function save(): void {}",
+      "    public function deletePost(int $id): void {}",
+      "    private function helper(): void {}",
+      "}",
+    ].join("\n");
+
+    expect(extractLivewireComponentInfo("/app", "/app/app/Livewire/Users/ShowPost.php", source)).toEqual({
+      className: "ShowPost",
+      filePath: "/app/app/Livewire/Users/ShowPost.php",
+      methods: ["deletePost", "save"],
+      name: "users.show-post",
+      namespace: "App\\Livewire\\Users",
+      properties: ["search", "userId"],
+    });
+
+    const legacy = "<?php\nnamespace App\\Http\\Livewire;\nclass Counter extends \\Livewire\\Component {}";
+    expect(extractLivewireComponentInfo("/app", "/app/app/Http/Livewire/Counter.php", legacy)).toEqual(
+      expect.objectContaining({ className: "Counter", name: "counter" }),
+    );
+
+    const plainClass = "<?php\nnamespace App\\Livewire;\nclass Helper extends Support {}";
+    expect(extractLivewireComponentInfo("/app", "/app/app/Livewire/Helper.php", plainClass)).toBe(null);
   });
 
   it("maps changed paths to index kinds", () => {

@@ -271,6 +271,49 @@ describe("Laravel definitions", () => {
     ]);
   });
 
+  it("resolves Livewire component and wire binding definitions", () => {
+    const componentLocation = {
+      range: {
+        end: { character: 0, line: 0 },
+        start: { character: 0, line: 0 },
+      },
+      uri: "file:///app/app/Livewire/UserCard.php",
+    };
+
+    const tagSource = '<livewire:user-card :search="$term" />';
+    const tagDocument = TextDocument.create(
+      "file:///app/resources/views/dashboard.blade.php",
+      "blade",
+      1,
+      tagSource,
+    );
+    expect(definitionsForDocument(tagDocument, { line: 0, character: tagSource.indexOf("user-card") + 1 }, indexFixture)).toEqual([
+      componentLocation,
+    ]);
+
+    const directiveSource = "@livewire('user-card')";
+    const directiveDocument = TextDocument.create(
+      "file:///app/resources/views/dashboard.blade.php",
+      "blade",
+      1,
+      directiveSource,
+    );
+    expect(definitionsForDocument(directiveDocument, { line: 0, character: directiveSource.indexOf("user-card") + 1 }, indexFixture)).toEqual([
+      componentLocation,
+    ]);
+
+    const bindingSource = '<button wire:click="save">Save</button>';
+    const bindingDocument = TextDocument.create(
+      "file:///app/resources/views/livewire/user-card.blade.php",
+      "blade",
+      1,
+      bindingSource,
+    );
+    expect(definitionsForDocument(bindingDocument, { line: 0, character: bindingSource.indexOf("save") + 1 }, indexFixture)).toEqual([
+      componentLocation,
+    ]);
+  });
+
   it("resolves Inertia page definitions in render contexts", () => {
     const source = "<?php\nreturn Inertia::render('Users/Index', []);";
     const line = source.split("\n")[1];
@@ -908,6 +951,16 @@ const indexFixture: LaravelIndex = {
   ...emptyIndex(),
   inertiaPages: [
     { filePath: "/app/resources/js/Pages/Users/Index.vue", name: "Users/Index" },
+  ],
+  livewireComponents: [
+    {
+      className: "UserCard",
+      filePath: "/app/app/Livewire/UserCard.php",
+      methods: ["save"],
+      name: "user-card",
+      namespace: "App\\Livewire",
+      properties: ["search"],
+    },
   ],
   authUserModel: "App\\Models\\User",
   bladeComponents: [

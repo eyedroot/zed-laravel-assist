@@ -486,6 +486,36 @@ describe("Laravel diagnostics", () => {
     expect(diagnosticsForDocument(document, { ...indexFixture, inertiaPages: [] })).toEqual([]);
   });
 
+  it("reports unresolved Livewire components only when components are indexed", () => {
+    const document = TextDocument.create(
+      "file:///app/resources/views/dashboard.blade.php",
+      "blade",
+      1,
+      [
+        "<livewire:user-card />",
+        "<livewire:missing-card />",
+        "@livewire('missing-card')",
+      ].join("\n"),
+    );
+
+    expect(diagnosticsForDocument(document, indexFixture)).toEqual([
+      expect.objectContaining({
+        data: {
+          kind: "livewireComponent",
+          value: "missing-card",
+        },
+        message: "Unknown Livewire component 'missing-card'.",
+        range: { end: { character: 22, line: 1 }, start: { character: 10, line: 1 } },
+      }),
+      expect.objectContaining({
+        message: "Unknown Livewire component 'missing-card'.",
+        range: { end: { character: 23, line: 2 }, start: { character: 11, line: 2 } },
+      }),
+    ]);
+
+    expect(diagnosticsForDocument(document, { ...indexFixture, livewireComponents: [] })).toEqual([]);
+  });
+
   it("reports policy, request, and resource naming convention mismatches", () => {
     const policyMapDocument = TextDocument.create(
       "file:///app/app/Providers/AuthServiceProvider.php",
@@ -565,6 +595,16 @@ const indexFixture: LaravelIndex = {
   ...emptyIndex(),
   inertiaPages: [
     { filePath: "/app/resources/js/Pages/Users/Index.vue", name: "Users/Index" },
+  ],
+  livewireComponents: [
+    {
+      className: "UserCard",
+      filePath: "/app/app/Livewire/UserCard.php",
+      methods: ["save"],
+      name: "user-card",
+      namespace: "App\\Livewire",
+      properties: ["search"],
+    },
   ],
   bladeComponents: [
     {

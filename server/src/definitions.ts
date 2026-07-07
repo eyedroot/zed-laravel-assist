@@ -24,6 +24,13 @@ export function definitionsForDocument(
       .map((candidate) => Location.create(pathToFileURL(candidate.filePath).toString(), startRange()));
   }
 
+  const livewireComponent = livewireComponentTagContextAtPosition(document, position);
+  if (livewireComponent) {
+    return index.livewireComponents
+      .filter((candidate) => candidate.name === livewireComponent.value)
+      .map((candidate) => Location.create(pathToFileURL(candidate.filePath).toString(), startRange()));
+  }
+
   const provider = serviceProviderContextAtPosition(document, position, index);
   if (provider?.classFilePath) {
     return [Location.create(pathToFileURL(provider.classFilePath).toString(), startRange())];
@@ -138,6 +145,19 @@ export function definitionsForDocument(
       .map((page) => Location.create(pathToFileURL(page.filePath).toString(), startRange()));
   }
 
+  if (context.kind === "livewireComponent") {
+    return index.livewireComponents
+      .filter((component) => component.name === context.value)
+      .map((component) => Location.create(pathToFileURL(component.filePath).toString(), startRange()));
+  }
+
+  if (context.kind === "livewireBinding") {
+    const component = livewireComponentForDocument(document, index);
+    return component && (component.methods.includes(context.value) || component.properties.includes(context.value))
+      ? [Location.create(pathToFileURL(component.filePath).toString(), startRange())]
+      : [];
+  }
+
   if (context.kind === "bladeSection") {
     return index.bladeViews
       .filter((view) => view.name === context.model && view.yields.includes(context.value))
@@ -234,9 +254,13 @@ export function definitionsForDocument(
 
 type DefinitionStringContext =
   | {
-  kind: "authorization" | "command" | "config" | "container" | "env" | "inertiaPage" | "middleware" | "route" | "translation" | "validationField" | "view";
+  kind: "authorization" | "command" | "config" | "container" | "env" | "inertiaPage" | "livewireComponent" | "middleware" | "route" | "translation" | "validationField" | "view";
   value: string;
 }
+  | {
+      kind: "livewireBinding";
+      value: string;
+    }
   | {
       kind: "bladeSection";
       model: string;
@@ -273,7 +297,7 @@ type DefinitionStringContext =
     };
 type DefinitionSimpleKind = Extract<
   DefinitionStringContext,
-  { kind: "authorization" | "command" | "config" | "container" | "env" | "inertiaPage" | "middleware" | "route" | "translation" | "validationField" | "view" }
+  { kind: "authorization" | "command" | "config" | "container" | "env" | "inertiaPage" | "livewireComponent" | "middleware" | "route" | "translation" | "validationField" | "view" }
 >["kind"];
 
 function componentContextAtPosition(
@@ -296,6 +320,40 @@ function componentContextAtPosition(
   }
 
   return null;
+}
+
+function livewireComponentTagContextAtPosition(
+  document: TextDocument,
+  position: Position,
+): { value: string } | null {
+  const line = document.getText().split(/\r?\n/)[position.line] ?? "";
+
+  for (const match of line.matchAll(/<livewire:([A-Za-z0-9_.-]+)/g)) {
+    const name = match[1];
+    const start = (match.index ?? 0) + "<livewire:".length;
+    const end = start + name.length;
+    if (position.character >= start && position.character <= end) {
+      return { value: name };
+    }
+  }
+
+  return null;
+}
+
+function livewireComponentForDocument(
+  document: TextDocument,
+  index: LaravelIndex,
+): LaravelIndex["livewireComponents"][number] | null {
+  const documentPath = documentPathFromUri(document.uri);
+  const match = documentPath
+    ? /[/\\]resources[/\\]views[/\\]livewire[/\\](.+)\.blade\.php$/.exec(documentPath)
+    : null;
+  if (!match) {
+    return null;
+  }
+
+  const name = match[1].split(/[/\\]/).join(".");
+  return index.livewireComponents.find((component) => component.name === name) ?? null;
 }
 
 function componentPropContextAtPosition(
@@ -565,6 +623,10 @@ function stringContextAtPosition(
     const routeParameterRouteName = routeParameterContextRouteName(prefix);
     if (routeParameterRouteName) {
       return { kind: "routeParameter", model: routeParameterRouteName, value };
+    }
+
+    if (/\bwire:[a-zA-Z0-9.-]+\s*=\s*$/.test(prefix)) {
+      return { kind: "livewireBinding", value };
     }
 
     const kind = definitionKindForPrefix(prefix);
@@ -1159,6 +1221,10 @@ function definitionKindForPrefix(prefix: string): DefinitionSimpleKind | null {
     /\bRoute::inertia\s*\(\s*['"][^'"]*['"]\s*,\s*$/.test(prefix)
   ) {
     return "inertiaPage";
+  }
+
+  if (/@livewire\s*\(\s*$/.test(prefix)) {
+    return "livewireComponent";
   }
 
   if (/(__|trans|trans_choice)\s*\(\s*$/.test(prefix) || /@(lang|choice)\s*\(\s*$/.test(prefix)) {

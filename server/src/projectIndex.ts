@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { resolvePhpClassReference } from "./phpResolver.js";
 
-export const LARAVEL_INDEX_CACHE_VERSION = 34;
+export const LARAVEL_INDEX_CACHE_VERSION = 35;
 
 export interface LaravelIndex {
   // FQN configured at `auth.providers.users.model`, when the project sets one.
@@ -21,6 +21,7 @@ export interface LaravelIndex {
   factories: FactoryInfo[];
   facades: FacadeInfo[];
   inertiaPages: InertiaPageInfo[];
+  livewireComponents: LivewireComponentInfo[];
   macros: MacroInfo[];
   middleware: MiddlewareInfo[];
   models: ModelInfo[];
@@ -197,6 +198,19 @@ export interface TranslationKeyInfo {
 export interface InertiaPageInfo {
   filePath: string;
   name: string;
+}
+
+// Livewire component class under `app/Livewire` (v3) or `app/Http/Livewire`
+// (v2), addressed by its `<livewire:users.show-post>` kebab-case tag name.
+// Public properties back `wire:model` bindings and tag parameters; public
+// methods back `wire:click`-style action bindings.
+export interface LivewireComponentInfo {
+  className: string;
+  filePath: string;
+  methods: string[];
+  name: string;
+  namespace: string | null;
+  properties: string[];
 }
 
 export interface ConfigKeyInfo {
@@ -403,6 +417,7 @@ export type LaravelIndexFileKind =
   | "factory"
   | "facade"
   | "inertiaPage"
+  | "livewireComponent"
   | "macro"
   | "middleware"
   | "model"
@@ -433,6 +448,7 @@ export interface CachedIndexFile {
     | FactoryInfo[]
     | FacadeInfo[]
     | InertiaPageInfo[]
+    | LivewireComponentInfo[]
     | MacroInfo[]
     | MiddlewareInfo[]
     | ServiceProviderInfo[]
@@ -488,6 +504,7 @@ export function emptyIndex(): LaravelIndex {
     factories: [],
     facades: [],
     inertiaPages: [],
+    livewireComponents: [],
     macros: [],
     middleware: [],
     models: [],
@@ -594,6 +611,7 @@ export function indexFromCache(cache: LaravelIndexCache): LaravelIndex {
   const factories: FactoryInfo[] = [];
   const facades: FacadeInfo[] = [];
   const inertiaPages: InertiaPageInfo[] = [];
+  const livewireComponents: LivewireComponentInfo[] = [];
   const macros: MacroInfo[] = [];
   const middleware: MiddlewareInfo[] = [];
   const models: ModelInfo[] = [];
@@ -643,6 +661,9 @@ export function indexFromCache(cache: LaravelIndexCache): LaravelIndex {
         break;
       case "inertiaPage":
         inertiaPages.push(...(file.entries as InertiaPageInfo[]));
+        break;
+      case "livewireComponent":
+        livewireComponents.push(...(file.entries as LivewireComponentInfo[]));
         break;
       case "macro":
         macros.push(...(file.entries as MacroInfo[]));
@@ -694,6 +715,7 @@ export function indexFromCache(cache: LaravelIndexCache): LaravelIndex {
       (facade) => facade.className,
     ),
     inertiaPages: sortBy(inertiaPages, (page) => page.name),
+    livewireComponents: sortBy(livewireComponents, (component) => component.name),
     macros: sortBy(uniqueMacros(macros), (macro) => `${macro.className}:${macro.method}`),
     middleware: sortBy(uniqueMiddleware(middleware), (entry) => entry.alias),
     models: sortBy(resolveCustomModelBuilders(applyModelTraits(models)), (model) => model.className),
@@ -2946,6 +2968,12 @@ async function collectIndexFileCandidates(rootPath: string): Promise<IndexFileCa
     ...(await inertiaPageDirectoryRoots(rootPath)).map((pagesRoot) =>
       addFiles("inertiaPage", pagesRoot, isInertiaPageFile),
     ),
+    addFiles("livewireComponent", path.join(rootPath, "app", "Livewire"), (filePath) =>
+      filePath.endsWith(".php"),
+    ),
+    addFiles("livewireComponent", path.join(rootPath, "app", "Http", "Livewire"), (filePath) =>
+      filePath.endsWith(".php"),
+    ),
     addFiles("config", path.join(rootPath, "config"), (filePath) => filePath.endsWith(".php")),
     addFiles("model", path.join(rootPath, "app", "Models"), (filePath) =>
       filePath.endsWith(".php"),
@@ -3114,6 +3142,12 @@ function indexFileKindsForPath(rootPath: string, filePath: string): LaravelIndex
     if (relativePath.startsWith(path.join("app", "View", "Components") + path.sep)) {
       kinds.push("bladeComponent");
     }
+    if (
+      relativePath.startsWith(path.join("app", "Livewire") + path.sep) ||
+      relativePath.startsWith(path.join("app", "Http", "Livewire") + path.sep)
+    ) {
+      kinds.push("livewireComponent");
+    }
     if (relativePath.startsWith(path.join("app", "Console", "Commands") + path.sep)) {
       kinds.push("command");
     }
@@ -3168,6 +3202,7 @@ async function indexFile(
   | FactoryInfo[]
   | FacadeInfo[]
   | InertiaPageInfo[]
+  | LivewireComponentInfo[]
   | MacroInfo[]
   | MiddlewareInfo[]
   | ModelInfo[]
@@ -3205,6 +3240,10 @@ async function indexFile(
       return extractFacadeInfo(filePath, await safeRead(filePath));
     case "inertiaPage":
       return [extractInertiaPageInfo(rootPath, filePath)];
+    case "livewireComponent": {
+      const component = extractLivewireComponentInfo(rootPath, filePath, await safeRead(filePath));
+      return component ? [component] : [];
+    }
     case "macro":
       return extractMacroInfo(filePath, await safeRead(filePath));
     case "middleware":
@@ -3276,6 +3315,71 @@ async function inertiaPageDirectoryRoots(rootPath: string): Promise<string[]> {
   } catch {
     return [];
   }
+}
+
+// Framework lifecycle hooks that are not user-invokable `wire:*` actions.
+const LIVEWIRE_LIFECYCLE_METHODS = new Set([
+  "boot", "booted", "dehydrate", "exception", "hydrate", "messages", "mount",
+  "render", "rendered", "rendering", "rules", "validationAttributes",
+]);
+
+export function extractLivewireComponentInfo(
+  rootPath: string,
+  filePath: string,
+  source: string,
+): LivewireComponentInfo | null {
+  const classMatch = /\bclass\s+([A-Za-z_][A-Za-z0-9_]*)\s+extends\s+([A-Za-z_\\][A-Za-z0-9_\\]*)/.exec(source);
+  if (!classMatch || !livewireParentClass(classMatch[2], source)) {
+    return null;
+  }
+
+  const properties: string[] = [];
+  for (const property of source.matchAll(/\bpublic\s+(?!static\b)(?:\??[A-Za-z_\\][A-Za-z0-9_\\|]*\s+)?\$([A-Za-z_][A-Za-z0-9_]*)/g)) {
+    properties.push(property[1]);
+  }
+
+  const methods: string[] = [];
+  for (const method of source.matchAll(/\bpublic\s+function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+    const name = method[1];
+    if (LIVEWIRE_LIFECYCLE_METHODS.has(name) || name.startsWith("__") || /^(?:updating|updated)[A-Z]?/.test(name)) {
+      continue;
+    }
+    methods.push(name);
+  }
+
+  return {
+    className: classMatch[1],
+    filePath,
+    methods: uniqueSorted(methods),
+    name: livewireComponentName(rootPath, filePath),
+    namespace: /namespace\s+([^;]+);/.exec(source)?.[1].trim() ?? null,
+    properties: uniqueSorted(properties),
+  };
+}
+
+function livewireParentClass(parent: string, source: string): boolean {
+  if (/^\\?Livewire\\Component$/.test(parent)) {
+    return true;
+  }
+
+  return parent === "Component" && /\buse\s+Livewire\\Component\s*;/.test(source);
+}
+
+// `app/Livewire/Users/ShowPost.php` -> `users.show-post`, matching Livewire's
+// kebab-case dot-notation tag names.
+function livewireComponentName(rootPath: string, filePath: string): string {
+  const livewireRoots = [
+    path.join(rootPath, "app", "Http", "Livewire"),
+    path.join(rootPath, "app", "Livewire"),
+  ];
+  const livewireRoot = livewireRoots.find((candidate) => filePath.startsWith(candidate + path.sep));
+  const relativePath = livewireRoot ? path.relative(livewireRoot, filePath) : path.basename(filePath);
+
+  return relativePath
+    .replace(/\.php$/, "")
+    .split(path.sep)
+    .map((segment) => segment.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase())
+    .join(".");
 }
 
 export function extractInertiaPageInfo(rootPath: string, filePath: string): InertiaPageInfo {

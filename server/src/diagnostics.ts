@@ -13,6 +13,8 @@ export function diagnosticsForDocument(document: TextDocument, index: LaravelInd
   // Empty when the project has no indexed page directory; the diagnostic
   // stays silent then so non-Inertia projects are never flagged.
   const inertiaPageNames = new Set(index.inertiaPages.map((page) => page.name));
+  // Same fail-safe: only diagnose Livewire names when components are indexed.
+  const livewireComponentNames = new Set(index.livewireComponents.map((component) => component.name));
   const componentNames = new Set(index.bladeComponents.map((component) => component.name));
   const configKeys = new Set(index.configKeys);
   const envKeys = new Set(index.envKeys);
@@ -203,6 +205,14 @@ export function diagnosticsForDocument(document: TextDocument, index: LaravelInd
       }
     }
 
+    if (livewireComponentNames.size > 0) {
+      for (const component of livewireComponentContextsInLine(line)) {
+        if (!livewireComponentNames.has(component.value)) {
+          diagnostics.push(unresolvedDiagnostic(lineIndex, component, `Unknown Livewire component '${component.value}'.`));
+        }
+      }
+    }
+
     for (const prop of componentPropContextsInLine(line)) {
       const component = index.bladeComponents.find((candidate) => candidate.name === prop.model);
       if (
@@ -240,6 +250,9 @@ export function diagnosticsForDocument(document: TextDocument, index: LaravelInd
       }
       if (context.kind === "inertiaPage" && inertiaPageNames.size > 0 && !inertiaPageNames.has(context.value)) {
         diagnostics.push(unresolvedDiagnostic(lineIndex, context, `Unknown Inertia page '${context.value}'.`));
+      }
+      if (context.kind === "livewireComponent" && livewireComponentNames.size > 0 && !livewireComponentNames.has(context.value)) {
+        diagnostics.push(unresolvedDiagnostic(lineIndex, context, `Unknown Livewire component '${context.value}'.`));
       }
       if (context.kind === "config" && !configKeys.has(context.value)) {
         diagnostics.push(unresolvedDiagnostic(lineIndex, context, `Unknown Laravel config key '${context.value}'.`));
@@ -305,6 +318,7 @@ export interface LaravelDiagnosticData {
     | "env"
     | "factoryState"
     | "inertiaPage"
+    | "livewireComponent"
     | "modelAttribute"
     | "middleware"
     | "policyConvention"
@@ -334,6 +348,23 @@ type DiagnosticStringContext = {
   tableName?: string;
   value: string;
 };
+
+function livewireComponentContextsInLine(line: string): DiagnosticStringContext[] {
+  const contexts: DiagnosticStringContext[] = [];
+
+  for (const match of line.matchAll(/<livewire:([A-Za-z0-9_.-]+)/g)) {
+    const value = match[1];
+    const start = (match.index ?? 0) + "<livewire:".length;
+    contexts.push({
+      end: start + value.length,
+      kind: "livewireComponent",
+      start,
+      value,
+    });
+  }
+
+  return contexts;
+}
 
 function componentContextsInLine(line: string): DiagnosticStringContext[] {
   const contexts: DiagnosticStringContext[] = [];
@@ -853,6 +884,9 @@ function diagnosticKindForPrefix(prefix: string): DiagnosticStringContext["kind"
     /\bRoute::inertia\s*\(\s*['"][^'"]*['"]\s*,\s*$/.test(prefix)
   ) {
     return "inertiaPage";
+  }
+  if (/@livewire\s*\(\s*$/.test(prefix)) {
+    return "livewireComponent";
   }
   if (/\bconfig\s*\(\s*$/.test(prefix)) {
     return "config";

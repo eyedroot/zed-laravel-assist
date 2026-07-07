@@ -216,6 +216,8 @@ function allCandidates(data: LaravelDiagnosticData, index: LaravelIndex): string
         : [];
     case "inertiaPage":
       return index.inertiaPages.map((page) => page.name);
+    case "livewireComponent":
+      return index.livewireComponents.map((component) => component.name);
     case "middleware":
       return index.middleware.map((middleware) => middleware.alias);
     case "modelAttribute":

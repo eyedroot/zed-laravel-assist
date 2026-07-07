@@ -258,6 +258,61 @@ describe("Laravel completions", () => {
     );
   });
 
+  it("completes Livewire component names in tags and @livewire directives", () => {
+    const expected = expect.arrayContaining([
+      expect.objectContaining({ detail: "Livewire component App\\Livewire\\UserCard", label: "user-card" }),
+    ]);
+
+    for (const line of ["<livewire:", "@livewire('"]) {
+      const document = TextDocument.create(
+        "file:///app/resources/views/dashboard.blade.php",
+        "blade",
+        1,
+        line,
+      );
+      expect(completionsForDocument(document, { line: 0, character: line.length }, indexFixture)).toEqual(expected);
+    }
+  });
+
+  it("completes Livewire tag parameters and wire bindings", () => {
+    const tagLine = "<livewire:user-card ";
+    const tagDocument = TextDocument.create(
+      "file:///app/resources/views/dashboard.blade.php",
+      "blade",
+      1,
+      tagLine,
+    );
+    expect(completionsForDocument(tagDocument, { line: 0, character: tagLine.length }, indexFixture)).toEqual([
+      expect.objectContaining({ detail: "Livewire property UserCard::$search", label: "search" }),
+      expect.objectContaining({ detail: "Livewire property UserCard::$userId", label: "user-id" }),
+    ]);
+
+    const modelLine = '<input wire:model="';
+    const componentView = "file:///app/resources/views/livewire/user-card.blade.php";
+    const modelDocument = TextDocument.create(componentView, "blade", 1, modelLine);
+    expect(completionsForDocument(modelDocument, { line: 0, character: modelLine.length }, indexFixture)).toEqual([
+      expect.objectContaining({ detail: "Livewire property UserCard::$search", label: "search" }),
+      expect.objectContaining({ detail: "Livewire property UserCard::$userId", label: "userId" }),
+    ]);
+
+    const clickLine = '<button wire:click="';
+    const clickDocument = TextDocument.create(componentView, "blade", 1, clickLine);
+    expect(completionsForDocument(clickDocument, { line: 0, character: clickLine.length }, indexFixture)).toEqual([
+      expect.objectContaining({ detail: "Livewire action UserCard::deletePost()", label: "deletePost" }),
+      expect.objectContaining({ detail: "Livewire action UserCard::save()", label: "save" }),
+    ]);
+
+    const outsideDocument = TextDocument.create(
+      "file:///app/resources/views/dashboard.blade.php",
+      "blade",
+      1,
+      clickLine,
+    );
+    expect(completionsForDocument(outsideDocument, { line: 0, character: clickLine.length }, indexFixture)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: "save" })]),
+    );
+  });
+
   it("completes Inertia page names in render contexts", () => {
     const expected = expect.arrayContaining([
       expect.objectContaining({ detail: "Inertia page", label: "Users/Index" }),
@@ -927,6 +982,16 @@ const indexFixture: LaravelIndex = {
   inertiaPages: [
     { filePath: "/app/resources/js/Pages/Users/Index.vue", name: "Users/Index" },
     { filePath: "/app/resources/js/Pages/Dashboard.vue", name: "Dashboard" },
+  ],
+  livewireComponents: [
+    {
+      className: "UserCard",
+      filePath: "/app/app/Livewire/UserCard.php",
+      methods: ["deletePost", "save"],
+      name: "user-card",
+      namespace: "App\\Livewire",
+      properties: ["search", "userId"],
+    },
   ],
   configEntries: [
     {

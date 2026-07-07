@@ -75,5 +75,5 @@
 - [x] `DB::table(...)` table name and chained column completions, hover, and definitions
 - [x] `Storage::disk(...)` disk name completions from filesystems config
 - [x] Inertia page completions, navigation, missing-page diagnostics, and typo quick fixes
-- [ ] Livewire component intelligence (deferred: needs a Livewire fixture project)
+- [x] Livewire component intelligence: `<livewire:...>` / `@livewire(...)` completions, hover, navigation, diagnostics, quick fixes, tag parameter completions, and `wire:model` / `wire:click` binding completions and navigation inside component views
 - [ ] code generation commands (deferred: LSP quick fixes only, no file scaffolding yet)

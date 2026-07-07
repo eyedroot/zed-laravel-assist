@@ -291,6 +291,46 @@ export function completionsForDocument(
     );
   }
 
+  const livewireTag = livewireComponentTagContext(line);
+  if (livewireTag === "tag" || /@livewire\s*\(\s*['"][^'"]*$/.test(line)) {
+    return index.livewireComponents.map((component) => ({
+      label: component.name,
+      kind: CompletionItemKind.Class,
+      detail: livewireComponentDetail(component),
+      data: { filePath: component.filePath },
+    }));
+  }
+
+  if (typeof livewireTag === "object" && livewireTag?.kind === "props") {
+    const component = index.livewireComponents.find((candidate) => candidate.name === livewireTag.name);
+    return (
+      component?.properties.map((property) => ({
+        label: livewireKebabCase(property),
+        kind: CompletionItemKind.Property,
+        detail: `Livewire property ${component.className}::$${property}`,
+        data: { filePath: component.filePath },
+      })) ?? []
+    );
+  }
+
+  const wireBinding = livewireWireBindingContext(document, line, index);
+  if (wireBinding?.kind === "properties") {
+    return wireBinding.component.properties.map((property) => ({
+      label: property,
+      kind: CompletionItemKind.Property,
+      detail: `Livewire property ${wireBinding.component.className}::$${property}`,
+      data: { filePath: wireBinding.component.filePath },
+    }));
+  }
+  if (wireBinding?.kind === "methods") {
+    return wireBinding.component.methods.map((method) => ({
+      label: method,
+      kind: CompletionItemKind.Method,
+      detail: `Livewire action ${wireBinding.component.className}::${method}()`,
+      data: { filePath: wireBinding.component.filePath },
+    }));
+  }
+
   const routeParameterName = routeParameterCompletionRouteName(line);
   if (routeParameterName) {
     const route = index.routes.find((candidate) => candidate.name === routeParameterName);
@@ -1187,6 +1227,64 @@ function bladeComponentTagContext(
 
   const propsMatch = /<x-([A-Za-z0-9_.:-]+)\s+[^>]*$/.exec(linePrefix);
   return propsMatch ? { kind: "props", name: propsMatch[1].replace(/:/g, ".") } : null;
+}
+
+function livewireComponentTagContext(
+  linePrefix: string,
+): "tag" | { kind: "props"; name: string } | null {
+  if (/<livewire:[A-Za-z0-9_.-]*$/.test(linePrefix)) {
+    return "tag";
+  }
+
+  const propsMatch = /<livewire:([A-Za-z0-9_.-]+)\s+[^>]*$/.exec(linePrefix);
+  return propsMatch ? { kind: "props", name: propsMatch[1] } : null;
+}
+
+function livewireComponentDetail(component: LaravelIndex["livewireComponents"][number]): string {
+  return component.namespace
+    ? `Livewire component ${component.namespace}\\${component.className}`
+    : `Livewire component ${component.className}`;
+}
+
+function livewireKebabCase(value: string): string {
+  return value.replace(/([a-z0-9])([A-Z])/g, "$1-$2").toLowerCase();
+}
+
+// `wire:model` binds public properties, other `wire:*` handlers bind public
+// action methods. Only resolvable inside the component's own Blade view under
+// `resources/views/livewire/**`.
+function livewireWireBindingContext(
+  document: TextDocument,
+  linePrefix: string,
+  index: LaravelIndex,
+): { component: LaravelIndex["livewireComponents"][number]; kind: "methods" | "properties" } | null {
+  const match = /\bwire:([a-zA-Z0-9.-]+)\s*=\s*['"][^'"]*$/.exec(linePrefix);
+  if (!match) {
+    return null;
+  }
+
+  const component = livewireComponentForDocument(document, index);
+  if (!component) {
+    return null;
+  }
+
+  return { component, kind: match[1].startsWith("model") ? "properties" : "methods" };
+}
+
+function livewireComponentForDocument(
+  document: TextDocument,
+  index: LaravelIndex,
+): LaravelIndex["livewireComponents"][number] | null {
+  const documentPath = documentPathFromUri(document.uri);
+  const match = documentPath
+    ? /[/\\]resources[/\\]views[/\\]livewire[/\\](.+)\.blade\.php$/.exec(documentPath)
+    : null;
+  if (!match) {
+    return null;
+  }
+
+  const name = match[1].split(/[/\\]/).join(".");
+  return index.livewireComponents.find((component) => component.name === name) ?? null;
 }
 
 function isInsideStringCall(linePrefix: string, helper: string): boolean {

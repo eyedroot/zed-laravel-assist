@@ -41,6 +41,22 @@ export function hoverForDocument(
     ]);
   }
 
+  const livewireContext = livewireComponentTagContextAtPosition(document, position);
+  if (livewireContext) {
+    const component = index.livewireComponents.find((candidate) => candidate.name === livewireContext.value);
+    if (!component) {
+      return null;
+    }
+
+    return markdownHover([
+      `**Livewire component** \`${component.name}\``,
+      `- Class: \`${component.namespace ? `${component.namespace}\\` : ""}${component.className}\``,
+      component.properties.length > 0 ? `- Properties: \`${component.properties.join(", ")}\`` : "",
+      component.methods.length > 0 ? `- Actions: \`${component.methods.join(", ")}\`` : "",
+      `- File: \`${component.filePath}\``,
+    ]);
+  }
+
   const providerContext = serviceProviderContextAtPosition(document, position, index);
   if (providerContext) {
     return markdownHover([
@@ -600,6 +616,24 @@ type HoverSimpleKind = Extract<
   HoverStringContext,
   { kind: "authorization" | "command" | "config" | "container" | "env" | "middleware" | "route" | "translation" | "validationField" | "view" }
 >["kind"];
+
+function livewireComponentTagContextAtPosition(
+  document: TextDocument,
+  position: Position,
+): { value: string } | null {
+  const line = document.getText().split(/\r?\n/)[position.line] ?? "";
+
+  for (const match of line.matchAll(/<livewire:([A-Za-z0-9_.-]+)/g)) {
+    const name = match[1];
+    const start = (match.index ?? 0) + "<livewire:".length;
+    const end = start + name.length;
+    if (position.character >= start && position.character <= end) {
+      return { value: name };
+    }
+  }
+
+  return null;
+}
 
 function componentContextAtPosition(
   document: TextDocument,

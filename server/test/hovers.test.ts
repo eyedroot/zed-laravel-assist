@@ -123,6 +123,23 @@ describe("Laravel hovers", () => {
     });
   });
 
+  it("shows Livewire component metadata", () => {
+    const document = TextDocument.create(
+      "file:///app/resources/views/dashboard.blade.php",
+      "blade",
+      1,
+      "<livewire:user-card />",
+    );
+
+    expect(hoverForDocument(document, { line: 0, character: 12 }, indexFixture)).toEqual({
+      contents: {
+        kind: "markdown",
+        value:
+          "**Livewire component** `user-card`\n- Class: `App\\Livewire\\UserCard`\n- Properties: `search`\n- Actions: `save`\n- File: `/app/app/Livewire/UserCard.php`",
+      },
+    });
+  });
+
   it("shows Blade component prop metadata", () => {
     const document = TextDocument.create(
       "file:///app/resources/views/users/index.blade.php",
@@ -664,6 +681,16 @@ describe("Laravel hovers", () => {
 
 const indexFixture: LaravelIndex = {
   ...emptyIndex(),
+  livewireComponents: [
+    {
+      className: "UserCard",
+      filePath: "/app/app/Livewire/UserCard.php",
+      methods: ["save"],
+      name: "user-card",
+      namespace: "App\\Livewire",
+      properties: ["search"],
+    },
+  ],
   bladeComponents: [
     {
       filePath: "/app/app/View/Components/Forms/Input.php",
