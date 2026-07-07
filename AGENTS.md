@@ -8,6 +8,8 @@ This repository aims to bring the Laravel development experience in Zed closer t
 - Do not revert user changes unless explicitly asked.
 - Keep changes small, clear, and scoped to the requested work.
 - Avoid unrelated refactors and formatting churn.
+- Avoid patchwork fixes that only cover the single reported case. When fixing a bug, identify the underlying structural cause and solve it generally, so the same class of input (different statement shapes, comments, strings, multi-line code) works without another patch. If a narrow fix is unavoidable, state the limitation explicitly.
+- When adding tests for a fix, cover varied real-world shapes and negative cases, not just the one input that reproduced the bug.
 - Do not guess about current Zed extension APIs, LSP behavior, or Laravel behavior. Verify with official documentation, source code, or local execution.
 
 ## Technical Direction
