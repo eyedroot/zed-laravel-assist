@@ -462,6 +462,49 @@ describe("Laravel definitions", () => {
     expect(definitionsForDocument(docblockDocument, { line: 2, character: 10 }, indexFixture)).toEqual(expected);
   });
 
+  it("resolves model property accessors and relation properties", () => {
+    const accessorDocument = TextDocument.create(
+      "file:///app/app/Http/Middleware/SetLocalePerUser.php",
+      "php",
+      1,
+      ["<?php", "$user = Auth::user();", "app()->setLocale($user->language_code);"].join("\n"),
+    );
+    const relationPropertyDocument = TextDocument.create(
+      "file:///app/app/Models/User.php",
+      "php",
+      1,
+      ["<?php", "class User extends Model", "{", "    public function getLanguageCodeAttribute()", "    {", "        return $this->language->code_2char;", "    }", "}"].join("\n"),
+    );
+
+    expect(definitionsForDocument(accessorDocument, { line: 2, character: 24 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 43, line: 54 },
+          start: { character: 19, line: 54 },
+        },
+        uri: "file:///app/app/Models/User.php",
+      },
+    ]);
+    expect(definitionsForDocument(relationPropertyDocument, { line: 5, character: 23 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 28, line: 52 },
+          start: { character: 20, line: 52 },
+        },
+        uri: "file:///app/app/Models/User.php",
+      },
+    ]);
+    expect(definitionsForDocument(relationPropertyDocument, { line: 5, character: 33 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/Models/Language.php",
+      },
+    ]);
+  });
+
   it("resolves Laravel relation methods in authenticated user chains", () => {
     const source = [
       "<?php",
@@ -960,6 +1003,18 @@ const indexFixture: LaravelIndex = {
   ],
   models: [
     {
+      casts: ["use_language"],
+      className: "Language",
+      filePath: "/app/app/Models/Language.php",
+      fillable: ["code_2char", "english_name", "use_language"],
+      guarded: [],
+      namespace: "App\\Models",
+      relations: [],
+      relationships: [],
+      scopes: [],
+      tableName: "languages",
+    },
+    {
       casts: [],
       className: "User",
       customBuilder: {
@@ -976,10 +1031,23 @@ const indexFixture: LaravelIndex = {
       filePath: "/app/app/Models/User.php",
       fillable: ["email"],
       guarded: [],
+      accessorDetails: [
+        {
+          name: "language_code",
+          range: { end: { character: 43, line: 54 }, start: { character: 19, line: 54 } },
+          returnType: "string",
+          source: "classic",
+        },
+      ],
+      accessors: ["language_code"],
       methodDetails: [
         {
           name: "posts",
           range: { end: { character: 28, line: 42 }, start: { character: 24, line: 42 } },
+        },
+        {
+          name: "language",
+          range: { end: { character: 28, line: 52 }, start: { character: 20, line: 52 } },
         },
         {
           name: "roles",
@@ -994,12 +1062,17 @@ const indexFixture: LaravelIndex = {
           type: "hasMany",
         },
         {
+          name: "language",
+          relatedModel: "Language",
+          type: "belongsTo",
+        },
+        {
           name: "roles",
           relatedModel: "Role",
           type: "belongsToMany",
         },
       ],
-      relationships: ["posts", "roles"],
+      relationships: ["language", "posts", "roles"],
       scopes: ["active"],
       tableName: "users",
     },

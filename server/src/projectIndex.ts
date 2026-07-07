@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { resolvePhpClassReference } from "./phpResolver.js";
 
-export const LARAVEL_INDEX_CACHE_VERSION = 32;
+export const LARAVEL_INDEX_CACHE_VERSION = 33;
 
 export interface LaravelIndex {
   // FQN configured at `auth.providers.users.model`, when the project sets one.
@@ -71,6 +71,7 @@ export interface ModelMethodInfo {
 
 export interface ModelAccessorInfo {
   name: string;
+  range?: SourceRange;
   returnType: string | null;
   source: "attribute" | "classic";
 }
@@ -1528,8 +1529,11 @@ function extractModelAccessors(source: string): ModelAccessorInfo[] {
 
   for (const match of source.matchAll(/(?:\/\*\*([\s\S]*?)\*\/\s*)?(?:(?:public|protected|private)\s+)?function\s+get([A-Z][A-Za-z0-9]*)Attribute\s*\([^)]*\)\s*(?::\s*([?\\A-Za-z_][\\A-Za-z0-9_]*))?/g)) {
     const name = attributeNameFromStudly(match[2]);
+    const methodName = `get${match[2]}Attribute`;
+    const nameOffset = (match.index ?? 0) + match[0].lastIndexOf(methodName);
     accessors.set(name, {
       name,
+      range: sourceRangeForOffset(source, nameOffset, methodName.length),
       returnType: normalizePhpType(match[3] ?? phpDocReturnType(match[1]) ?? docProperties.get(name)),
       source: "classic",
     });
@@ -1539,8 +1543,10 @@ function extractModelAccessors(source: string): ModelAccessorInfo[] {
     /(?:\/\*\*([\s\S]*?)\*\/\s*)?(?:(?:public|protected|private)\s+)?function\s+([a-z][A-Za-z0-9_]*)\s*\(\s*\)\s*:\s*\\?(?:Illuminate\\Database\\Eloquent\\Casts\\)?Attribute\b/g,
   )) {
     const name = attributeNameFromStudly(match[2]);
+    const nameOffset = (match.index ?? 0) + match[0].lastIndexOf(match[2]);
     accessors.set(name, {
       name,
+      range: sourceRangeForOffset(source, nameOffset, match[2].length),
       returnType: normalizePhpType(phpDocReturnType(match[1]) ?? docProperties.get(name)),
       source: "attribute",
     });

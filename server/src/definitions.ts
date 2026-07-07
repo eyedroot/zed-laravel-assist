@@ -1,7 +1,7 @@
 import { Location, Position, Range } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { frameworkBuilderMethodTargetForPrefix, instanceMemberTargetForPrefix } from "./instanceTypes.js";
+import { frameworkBuilderMethodTargetForPrefix, instanceMemberTargetForPrefix, instanceModelForPrefix } from "./instanceTypes.js";
 import { LaravelIndex, SourceRange } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
 
@@ -75,6 +75,16 @@ export function definitionsForDocument(
       Location.create(
         pathToFileURL(eloquentMethod.filePath).toString(),
         eloquentMethod.range ? { end: eloquentMethod.range.end, start: eloquentMethod.range.start } : startRange(),
+      ),
+    ];
+  }
+
+  const modelProperty = modelPropertyContextAtPosition(document, position, index);
+  if (modelProperty) {
+    return [
+      Location.create(
+        pathToFileURL(modelProperty.filePath).toString(),
+        modelProperty.range ? { end: modelProperty.range.end, start: modelProperty.range.start } : startRange(),
       ),
     ];
   }
@@ -626,6 +636,138 @@ function instanceMemberContextAtPosition(
 
   const prefix = document.getText().slice(0, document.offsetAt({ line: position.line, character: token.start }));
   return instanceMemberTargetForPrefix(document.getText(), prefix, index, token.value);
+}
+
+function modelPropertyContextAtPosition(
+  document: TextDocument,
+  position: Position,
+  index: LaravelIndex,
+): { filePath: string; range?: SourceRange } | null {
+  const line = document.getText().split(/\r?\n/)[position.line] ?? "";
+  const token = tokenAtPosition(line, position.character);
+  if (!token) {
+    return null;
+  }
+
+  const beforeToken = line.slice(0, token.start);
+  if (!/(\?->|->)\s*$/.test(beforeToken)) {
+    return null;
+  }
+
+  const model = modelForPropertyAccess(document, position, token.start, index);
+  return model ? modelPropertyTarget(model, token.value, index) : null;
+}
+
+function modelForPropertyAccess(
+  document: TextDocument,
+  position: Position,
+  tokenStart: number,
+  index: LaravelIndex,
+): LaravelIndex["models"][number] | null {
+  const line = document.getText().split(/\r?\n/)[position.line] ?? "";
+  const beforeToken = line.slice(0, tokenStart);
+  const chain = propertyAccessChainBeforeToken(beforeToken);
+  if (!chain) {
+    return null;
+  }
+
+  if (chain.root === "$this") {
+    const documentPath = documentPathFromUri(document.uri);
+    const model = documentPath ? (index.models.find((candidate) => candidate.filePath === documentPath) ?? null) : null;
+    return model ? resolvePropertyChainModel(model, chain.properties, document.getText(), index) : null;
+  }
+
+  const prefix = document.getText().slice(0, document.offsetAt({ line: position.line, character: tokenStart }));
+  const rootPrefix = prefix.slice(0, prefix.lastIndexOf(chain.properties[0] ?? ""));
+  const inferredModel = instanceModelForPrefix(document.getText(), rootPrefix, index);
+  if (inferredModel) {
+    return resolvePropertyChainModel(inferredModel, chain.properties, document.getText(), index);
+  }
+
+  const className = chain.root.startsWith("$") ? modelClassForVariable(document.getText(), chain.root) : null;
+  const resolved = className ? resolvePhpClassReference(document.getText(), className) : null;
+  const model = resolved
+    ? index.models.find((candidate) => candidate.className === resolved || `${candidate.namespace}\\${candidate.className}` === resolved) ?? null
+    : null;
+  return model ? resolvePropertyChainModel(model, chain.properties, document.getText(), index) : null;
+}
+
+function propertyAccessChainBeforeToken(prefix: string): { properties: string[]; root: string } | null {
+  const match = /(\$this|\$[A-Za-z_][A-Za-z0-9_]*)((?:\s*(?:\?->|->)\s*[A-Za-z_][A-Za-z0-9_]*)*)\s*(?:\?->|->)\s*$/.exec(prefix);
+  if (!match) {
+    return null;
+  }
+
+  const root = match[1];
+  const properties = [...match[2].matchAll(/(?:\?->|->)\s*([A-Za-z_][A-Za-z0-9_]*)/g)].map((property) => property[1]);
+  return { properties, root };
+}
+
+function resolvePropertyChainModel(
+  model: LaravelIndex["models"][number],
+  properties: string[],
+  documentText: string,
+  index: LaravelIndex,
+): LaravelIndex["models"][number] | null {
+  let current: LaravelIndex["models"][number] | null = model;
+
+  for (const property of properties) {
+    const relation = current?.relations.find((candidate) => candidate.name === property);
+    if (!relation?.relatedModel) {
+      return null;
+    }
+
+    const resolved = resolvePhpClassReference(documentText, relation.relatedModel);
+    current = index.models.find((candidate) => candidate.className === resolved || `${candidate.namespace}\\${candidate.className}` === resolved) ?? null;
+    if (!current) {
+      return null;
+    }
+  }
+
+  return current;
+}
+
+function modelPropertyTarget(
+  model: LaravelIndex["models"][number],
+  property: string,
+  index: LaravelIndex,
+): { filePath: string; range?: SourceRange } | null {
+  const relation = model.relations.find((candidate) => candidate.name === property || `${candidate.name}_count` === property);
+  if (relation) {
+    const method = model.methodDetails?.find((candidate) => candidate.name === relation.name);
+    return { filePath: model.filePath, ...(method ? { range: method.range } : {}) };
+  }
+
+  const accessor = model.accessorDetails?.find((candidate) => candidate.name === property);
+  if (accessor) {
+    return { filePath: model.filePath, ...(accessor.range ? { range: accessor.range } : {}) };
+  }
+
+  if (model.appends?.includes(property)) {
+    return { filePath: model.filePath };
+  }
+
+  const table = index.schemaTables.find((candidate) => candidate.name === model.tableName);
+  const column = table?.columns.find((candidate) => candidate.name === property);
+  if (column) {
+    return { filePath: column.filePath };
+  }
+
+  return model.fillable.includes(property) || model.guarded.includes(property) || model.casts.includes(property)
+    ? { filePath: model.filePath }
+    : null;
+}
+
+function modelClassForVariable(source: string, variable: string): string | null {
+  const escapedName = variable.slice(1).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const assignment = new RegExp(
+    `\\$${escapedName}\\s*=\\s*(?:new\\s+)?([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)\\s*(?:::|\\()`,
+  ).exec(source);
+  if (assignment) {
+    return assignment[1];
+  }
+
+  return new RegExp(`([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)\\s+\\$${escapedName}\\b`).exec(source)?.[1] ?? null;
 }
 
 function factoryStateContextAtPosition(

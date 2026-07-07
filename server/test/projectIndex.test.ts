@@ -338,7 +338,7 @@ describe("project index extraction", () => {
 
     const model = extractModelInfo("/app/app/Models/User.php", source);
     expect(model?.accessors).toEqual(["avatar_url", "full_name", "login_count"]);
-    expect(model?.accessorDetails).toEqual([
+    expect(model?.accessorDetails?.map(({ range: _range, ...accessor }) => accessor)).toEqual([
       {
         name: "avatar_url",
         returnType: "string|null",
@@ -354,6 +354,11 @@ describe("project index extraction", () => {
         returnType: "int",
         source: "classic",
       },
+    ]);
+    expect(model?.accessorDetails?.filter((accessor) => accessor.range).map((accessor) => accessor.name)).toEqual([
+      "avatar_url",
+      "full_name",
+      "login_count",
     ]);
     expect(model?.usesSoftDeletes).toBe(true);
 
