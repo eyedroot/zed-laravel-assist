@@ -161,8 +161,12 @@ export function hoverForDocument(
   }
   if (eloquentMethod?.kind === "framework") {
     return markdownHover([
-      `**Eloquent builder method** \`${eloquentMethod.className.split("\\").at(-1)}.${eloquentMethod.name}\``,
-      `- Model: \`${eloquentMethod.model.className}\``,
+      eloquentMethod.relation
+        ? `**Laravel relation method** \`${eloquentMethod.className.split("\\").at(-1)}.${eloquentMethod.name}\``
+        : `**Eloquent builder method** \`${eloquentMethod.className.split("\\").at(-1)}.${eloquentMethod.name}\``,
+      eloquentMethod.relation
+        ? `- Relation: \`${eloquentMethod.model.className}.${eloquentMethod.relation.name}\``
+        : `- Model: \`${eloquentMethod.model.className}\``,
       `- File: \`${eloquentMethod.filePath}\``,
     ]);
   }
@@ -738,7 +742,7 @@ function eloquentMethodContextAtPosition(
   index: LaravelIndex,
 ):
   | { kind: "builderMethod"; builder: NonNullable<LaravelIndex["models"][number]["customBuilder"]>; method: NonNullable<LaravelIndex["models"][number]["customBuilder"]>["methods"][number]; model: LaravelIndex["models"][number] }
-  | { className: string; filePath: string; kind: "framework"; model: LaravelIndex["models"][number]; name: string }
+  | { className: string; filePath: string; kind: "framework"; model: LaravelIndex["models"][number]; name: string; relation?: LaravelIndex["models"][number]["relations"][number] }
   | { kind: "scope"; model: LaravelIndex["models"][number]; scope: string }
   | null {
   const line = document.getText().split(/\r?\n/)[position.line] ?? "";
@@ -758,6 +762,7 @@ function eloquentMethodContextAtPosition(
           kind: "framework",
           model: frameworkMethod.model,
           name: frameworkMethod.name,
+          ...(frameworkMethod.relation ? { relation: frameworkMethod.relation } : {}),
         }
       : null;
   }

@@ -639,6 +639,214 @@ describe("Laravel definitions", () => {
     ]);
   });
 
+  it("resolves relation chain builder methods when a docblock precedes the statement", () => {
+    const source = [
+      "<?php",
+      "/** @var \\App\\Models\\User $user */",
+      "$user = Auth::user();",
+      "",
+      "/** @var \\Illuminate\\Database\\Eloquent\\Collection */",
+      "$userRoles = $user->roles()->where('role_id', $roleId)->get();",
+    ].join("\n");
+    const document = TextDocument.create(
+      "file:///app/app/Http/Middleware/RoleMiddleware.php",
+      "php",
+      1,
+      source,
+    );
+
+    expect(definitionsForDocument(document, { line: 5, character: 30 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/vendor/laravel/framework/src/Illuminate/Database/Eloquent/Builder.php",
+      },
+    ]);
+  });
+
+  it("resolves builder methods in relation chains inside return statements", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Middleware/RoleMiddleware.php",
+      "php",
+      1,
+      ["<?php", "$user = Auth::user();", "return $user?->roles()->where('name', 'admin')->exists();"].join("\n"),
+    );
+
+    expect(definitionsForDocument(document, { line: 2, character: 25 }, indexFixture)).toEqual([
+      expect.objectContaining({ uri: "file:///app/vendor/laravel/framework/src/Illuminate/Database/Eloquent/Builder.php" }),
+    ]);
+  });
+
+  it("resolves relation chain methods nested inside call arguments", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Middleware/RoleMiddleware.php",
+      "php",
+      1,
+      ["<?php", "$user = Auth::user();", "if (collect($user->roles()->pluck('id'))->isEmpty()) {", "}"].join("\n"),
+    );
+
+    expect(definitionsForDocument(document, { line: 2, character: 29 }, indexFixture)).toEqual([
+      expect.objectContaining({ uri: "file:///app/vendor/laravel/framework/src/Illuminate/Database/Query/Builder.php" }),
+    ]);
+  });
+
+  it("resolves relation chain methods across comments and tricky string arguments", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Middleware/RoleMiddleware.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "$user = Auth::user();",
+        "$admins = $user->roles()",
+        "    // ->fake('x;y')",
+        "    ->wherePivot('role_id', 'a;b -> (weird)')",
+        "    ->sync([]);",
+      ].join("\n"),
+    );
+
+    const belongsToMany = "file:///app/vendor/laravel/framework/src/Illuminate/Database/Eloquent/Relations/BelongsToMany.php";
+    expect(definitionsForDocument(document, { line: 4, character: 8 }, indexFixture)).toEqual([
+      expect.objectContaining({ uri: belongsToMany }),
+    ]);
+    expect(definitionsForDocument(document, { line: 5, character: 7 }, indexFixture)).toEqual([
+      expect.objectContaining({ uri: belongsToMany }),
+    ]);
+  });
+
+  it("resolves relation chain methods across heredoc arguments", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Middleware/RoleMiddleware.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "$user = Auth::user();",
+        "$user->roles()->whereRaw(<<<SQL",
+        "    role_id in (select 1) and note = ';'",
+        "SQL)->sync([]);",
+      ].join("\n"),
+    );
+
+    expect(definitionsForDocument(document, { line: 4, character: 7 }, indexFixture)).toEqual([
+      expect.objectContaining({ uri: "file:///app/vendor/laravel/framework/src/Illuminate/Database/Eloquent/Relations/BelongsToMany.php" }),
+    ]);
+  });
+
+  it("resolves scopes and custom builder methods in multi-line static chains", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "return User::query()",
+        "    ->when($flag, function ($query) {",
+        "        return $query->where('id', 1);",
+        "    })",
+        "    ->active()",
+        "    ->popularForTenant();",
+      ].join("\n"),
+    );
+
+    expect(definitionsForDocument(document, { line: 5, character: 7 }, indexFixture)).toEqual([
+      expect.objectContaining({ uri: "file:///app/app/Models/User.php" }),
+    ]);
+    expect(definitionsForDocument(document, { line: 6, character: 8 }, indexFixture)).toEqual([
+      expect.objectContaining({ uri: "file:///app/app/Models/Builders/UserBuilder.php" }),
+    ]);
+  });
+
+  it("resolves typed parameter and constructor-assigned receivers", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "function handle(User $member) {",
+        "    $post = Post::firstOrFail();",
+        "    $member->roles()->wherePivotNotIn('role_id', [1]);",
+        "    $post->comments()->whereNotNull('approved_at');",
+        "}",
+      ].join("\n"),
+    );
+
+    expect(definitionsForDocument(document, { line: 3, character: 24 }, indexFixture)).toEqual([
+      expect.objectContaining({ uri: "file:///app/vendor/laravel/framework/src/Illuminate/Database/Eloquent/Relations/BelongsToMany.php" }),
+    ]);
+    expect(definitionsForDocument(document, { line: 4, character: 12 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 32, line: 20 },
+          start: { character: 24, line: 20 },
+        },
+        uri: "file:///app/app/Models/Post.php",
+      },
+    ]);
+    expect(definitionsForDocument(document, { line: 4, character: 25 }, indexFixture)).toEqual([
+      expect.objectContaining({ uri: "file:///app/vendor/laravel/framework/src/Illuminate/Database/Query/Builder.php" }),
+    ]);
+  });
+
+  it("resolves relation chains rooted in auth helpers and the current request", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Middleware/RoleMiddleware.php",
+      "php",
+      1,
+      ["<?php", "auth()->user()->roles()->sync([1]);", "$total = $request->user()->roles()->count();"].join("\n"),
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: 26 }, indexFixture)).toEqual([
+      expect.objectContaining({ uri: "file:///app/vendor/laravel/framework/src/Illuminate/Database/Eloquent/Relations/BelongsToMany.php" }),
+    ]);
+    expect(definitionsForDocument(document, { line: 2, character: 37 }, indexFixture)).toEqual([
+      expect.objectContaining({ uri: "file:///app/vendor/laravel/framework/src/Illuminate/Database/Query/Builder.php" }),
+    ]);
+  });
+
+  it("resolves relation chains rooted in $this inside a model class", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Models/User.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "namespace App\\Models;",
+        "class User extends Model",
+        "{",
+        "    public function admins()",
+        "    {",
+        "        return $this->roles()->wherePivot('is_admin', 1);",
+        "    }",
+        "}",
+      ].join("\n"),
+    );
+
+    expect(definitionsForDocument(document, { line: 6, character: 33 }, indexFixture)).toEqual([
+      expect.objectContaining({ uri: "file:///app/vendor/laravel/framework/src/Illuminate/Database/Eloquent/Relations/BelongsToMany.php" }),
+    ]);
+  });
+
+  it("does not resolve members chained beyond the typed builder context", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Middleware/RoleMiddleware.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "$user = Auth::user();",
+        "$names = $user->roles()->get()->where('x', 1);",
+        "$ids = $user->roles->where('x', 1);",
+      ].join("\n"),
+    );
+
+    expect(definitionsForDocument(document, { line: 2, character: 33 }, indexFixture)).toEqual([]);
+    expect(definitionsForDocument(document, { line: 3, character: 22 }, indexFixture)).toEqual([]);
+  });
+
   it("does not resolve members of untyped variables", () => {
     const document = TextDocument.create(
       "file:///app/app/Http/Middleware/RoleMiddleware.php",
@@ -1179,6 +1387,30 @@ const indexFixture: LaravelIndex = {
     },
   ],
   models: [
+    {
+      casts: [],
+      className: "Post",
+      filePath: "/app/app/Models/Post.php",
+      fillable: ["title"],
+      guarded: [],
+      methodDetails: [
+        {
+          name: "comments",
+          range: { end: { character: 32, line: 20 }, start: { character: 24, line: 20 } },
+        },
+      ],
+      namespace: "App\\Models",
+      relations: [
+        {
+          name: "comments",
+          relatedModel: "Comment",
+          type: "hasMany",
+        },
+      ],
+      relationships: ["comments"],
+      scopes: [],
+      tableName: "posts",
+    },
     {
       casts: ["use_language"],
       className: "Language",
