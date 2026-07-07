@@ -27,26 +27,20 @@ export function completionsForDocument(
     }));
   }
 
-  const validationSchemaContext = validationSchemaContextForLine(line);
+  const validationSchemaContext = validationSchemaContextForLine(line) ??
+    validationRuleStringContext(document, position, line);
   if (validationSchemaContext?.kind === "table") {
-    return index.schemaTables.map((table) => ({
-      label: table.name,
-      kind: CompletionItemKind.Struct,
-      detail: `Schema table ${table.columns.length} columns`,
-      data: { filePath: table.filePath },
-    }));
+    return schemaTableCompletionItems(index);
   }
   if (validationSchemaContext?.kind === "column") {
-    return (
-      index.schemaTables
-        .find((table) => table.name === validationSchemaContext.tableName)
-        ?.columns.map((column) => ({
-          label: column.name,
-          kind: CompletionItemKind.Field,
-          detail: schemaColumnDetail(column),
-          data: { filePath: column.filePath, tableName: column.tableName },
-        })) ?? []
-    );
+    return schemaColumnCompletionItems(index, validationSchemaContext.tableName);
+  }
+  if (validationSchemaContext?.kind === "rule") {
+    return VALIDATION_RULE_NAMES.map((rule) => ({
+      label: rule,
+      kind: CompletionItemKind.Value,
+      detail: "Laravel validation rule",
+    }));
   }
 
   if (isInsideValidationFieldCall(line)) {
@@ -91,6 +85,10 @@ export function completionsForDocument(
       detail: commandDetail(command),
       data: { filePath: command.filePath, signature: command.signature },
     }));
+  }
+
+  if (isInsideStorageDiskString(line)) {
+    return storageDiskCompletionItems(index);
   }
 
   if (isInsideMiddlewareString(line)) {
@@ -162,6 +160,15 @@ export function completionsForDocument(
           data: { filePath: factory.filePath, model: factory.model },
         })),
       );
+  }
+
+  const dbTableName = dbColumnContextTable(line);
+  if (dbTableName) {
+    return schemaColumnCompletionItems(index, dbTableName);
+  }
+
+  if (isInsideDbTableNameString(line)) {
+    return schemaTableCompletionItems(index);
   }
 
   const columnModel = eloquentColumnContextModel(line);
@@ -304,6 +311,15 @@ export function completionsForDocument(
         detail: routeDetail(route.methods, route.uri),
         data: { filePath: route.filePath, range: route.range },
       }));
+  }
+
+  if (isInsideInertiaPageString(line)) {
+    return index.inertiaPages.map((page) => ({
+      label: page.name,
+      kind: CompletionItemKind.File,
+      detail: "Inertia page",
+      data: { filePath: page.filePath },
+    }));
   }
 
   if (isInsideStringCall(line, "view")) {
@@ -484,15 +500,29 @@ const ELOQUENT_BUILDER_METHODS = [
 
 const SOFT_DELETE_BUILDER_METHODS = ["onlyTrashed", "restore", "withTrashed", "withoutTrashed"];
 
+const COLUMN_ARGUMENT_METHODS =
+  "(?:where|orWhere|whereIn|orWhereIn|whereNotIn|whereNull|whereNotNull|whereBetween|whereDate|whereNot|firstWhere|orderBy|orderByDesc|latest|oldest|value|pluck|select|addSelect|groupBy|min|max|sum|avg)";
+
 // Column-string argument position in an Eloquent chain that names its model:
 // `User::where('<cursor>`, `User::query()->orderBy('<cursor>`, ...
 function eloquentColumnContextModel(linePrefix: string): string | null {
-  const columnMethods =
-    "(?:where|orWhere|whereIn|orWhereIn|whereNotIn|whereNull|whereNotNull|whereBetween|whereDate|whereNot|firstWhere|orderBy|orderByDesc|latest|oldest|value|pluck|select|addSelect|groupBy|min|max|sum|avg)";
   const match = new RegExp(
-    `\\b([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)::[^;\\n]*?\\b${columnMethods}\\s*\\(\\s*(?:\\[\\s*)?['"][A-Za-z0-9_]*$`,
+    `\\b([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)::[^;\\n]*?\\b${COLUMN_ARGUMENT_METHODS}\\s*\\(\\s*(?:\\[\\s*)?['"][A-Za-z0-9_]*$`,
   ).exec(linePrefix);
   return match?.[1] ?? null;
+}
+
+// Table-name argument position in a query builder entry point:
+// `DB::table('<cursor>` or `DB::connection('x')->table('<cursor>`.
+function isInsideDbTableNameString(linePrefix: string): boolean {
+  return /\bDB::(?:connection\([^)]*\)\s*->\s*)?table\(\s*['"][A-Za-z0-9_]*$/.test(linePrefix);
+}
+
+// Column-string argument position in a `DB::table('users')->...` chain.
+function dbColumnContextTable(linePrefix: string): string | null {
+  return new RegExp(
+    `\\bDB::(?:connection\\([^)]*\\)\\s*->\\s*)?table\\(\\s*['"]([A-Za-z0-9_]+)['"]\\s*\\)[^;\\n]*->\\s*${COLUMN_ARGUMENT_METHODS}\\s*\\(\\s*(?:\\[\\s*)?['"][A-Za-z0-9_]*$`,
+  ).exec(linePrefix)?.[1] ?? null;
 }
 
 // Method position in an Eloquent chain: `User::query()-><cursor>` or
@@ -775,6 +805,12 @@ function isInsideModelAttributeArray(
   return Boolean(match && !/\]\s*;\s*$/.test(match[0]));
 }
 
+function isInsideInertiaPageString(linePrefix: string): boolean {
+  return /\bInertia::render\(\s*['"][^'"]*$/.test(linePrefix) ||
+    /(?<!::)\binertia\(\s*['"][^'"]*$/.test(linePrefix) ||
+    /\bRoute::inertia\(\s*['"][^'"]*['"]\s*,\s*['"][^'"]*$/.test(linePrefix);
+}
+
 function isInsideBladeViewDirectiveString(linePrefix: string): boolean {
   return /@(extends|include|includeIf|includeWhen|includeUnless|includeFirst|each|component)\s*\(\s*['"][^'"]*$/.test(
     linePrefix,
@@ -832,6 +868,8 @@ type ValidationSchemaCompletionContext =
   | { kind: "table" }
   | { kind: "column"; tableName: string };
 
+type ValidationRuleCompletionContext = ValidationSchemaCompletionContext | { kind: "rule" };
+
 function validationSchemaContextForLine(linePrefix: string): ValidationSchemaCompletionContext | null {
   const columnMatch = /\bRule::(?:exists|unique)\(\s*['"]([^'"]+)['"]\s*,\s*['"][^'"]*$/.exec(linePrefix);
   if (columnMatch) {
@@ -839,6 +877,114 @@ function validationSchemaContextForLine(linePrefix: string): ValidationSchemaCom
   }
 
   return /\bRule::(?:exists|unique)\(\s*['"][^'"]*$/.test(linePrefix) ? { kind: "table" } : null;
+}
+
+// Curated from the Laravel 11/12 validation docs: built-in string rule names.
+const VALIDATION_RULE_NAMES = [
+  "accepted", "accepted_if", "active_url", "after", "after_or_equal", "alpha",
+  "alpha_dash", "alpha_num", "array", "ascii", "bail", "before",
+  "before_or_equal", "between", "boolean", "confirmed", "contains",
+  "current_password", "date", "date_equals", "date_format", "decimal",
+  "declined", "declined_if", "different", "digits", "digits_between",
+  "dimensions", "distinct", "doesnt_end_with", "doesnt_start_with", "email",
+  "ends_with", "exclude", "exclude_if", "exclude_unless", "exclude_with",
+  "exclude_without", "exists", "extensions", "file", "filled", "gt", "gte",
+  "hex_color", "image", "in", "in_array", "integer", "ip", "ipv4", "ipv6",
+  "json", "list", "lowercase", "lt", "lte", "mac_address", "max", "max_digits",
+  "mimes", "mimetypes", "min", "min_digits", "missing", "missing_if",
+  "missing_unless", "missing_with", "missing_with_all", "multiple_of",
+  "not_in", "not_regex", "nullable", "numeric", "present", "present_if",
+  "present_unless", "present_with", "present_with_all", "prohibited",
+  "prohibited_if", "prohibited_unless", "prohibits", "regex", "required",
+  "required_array_keys", "required_if", "required_if_accepted",
+  "required_if_declined", "required_unless", "required_with",
+  "required_with_all", "required_without", "required_without_all", "same",
+  "size", "sometimes", "starts_with", "string", "timezone", "ulid", "unique",
+  "uppercase", "url", "uuid",
+];
+
+// Rule-string cursor inside a validation rules container: completes rule
+// names, and table/column parameters after `exists:`/`unique:`.
+function validationRuleStringContext(
+  document: TextDocument,
+  position: { line: number; character: number },
+  linePrefix: string,
+): ValidationRuleCompletionContext | null {
+  const segment = validationRuleSegment(linePrefix);
+  if (segment === null || !isInsideValidationRulesContainer(document, position)) {
+    return null;
+  }
+
+  const schemaMatch = /^(?:exists|unique):([A-Za-z0-9_.]*)(,[A-Za-z0-9_]*)?$/.exec(segment);
+  if (schemaMatch) {
+    return schemaMatch[2] === undefined ? { kind: "table" } : { kind: "column", tableName: schemaMatch[1] };
+  }
+
+  return { kind: "rule" };
+}
+
+// The rule segment being typed: the value string after `=>` (or a bare array
+// element string), narrowed to the text after the last `|` separator.
+function validationRuleSegment(linePrefix: string): string | null {
+  const value =
+    /=>\s*'([^']*)$/.exec(linePrefix)?.[1] ??
+    /=>\s*"([^"]*)$/.exec(linePrefix)?.[1] ??
+    /=>\s*\[[^\]]*['"]([^'"]*)$/.exec(linePrefix)?.[1] ??
+    /^\s*['"]([^'"]*)$/.exec(linePrefix)?.[1] ??
+    null;
+  return value === null ? null : (value.split("|").at(-1) ?? "");
+}
+
+function isInsideValidationRulesContainer(
+  document: TextDocument,
+  position: { line: number; character: number },
+): boolean {
+  const beforeCursor = document.getText({
+    start: { line: 0, character: 0 },
+    end: position,
+  });
+
+  const call = lastMatch(/(?:->validate|->validateWithBag|->sometimes|Validator::make)\s*\(/g, beforeCursor);
+  if (call && parenDelta(beforeCursor.slice(call.index + call[0].length)) >= 0) {
+    return true;
+  }
+
+  const rulesMethod = lastMatch(/function\s+rules\s*\([^)]*\)[^{]*\{/g, beforeCursor);
+  return Boolean(rulesMethod && braceDelta(beforeCursor.slice(rulesMethod.index + rulesMethod[0].length)) >= 0);
+}
+
+function lastMatch(pattern: RegExp, text: string): RegExpExecArray | null {
+  let match: RegExpExecArray | null = null;
+  for (const candidate of text.matchAll(pattern)) {
+    match = candidate as RegExpExecArray;
+  }
+  return match;
+}
+
+function parenDelta(text: string): number {
+  return [...text].reduce((delta, char) => delta + (char === "(" ? 1 : char === ")" ? -1 : 0), 0);
+}
+
+function schemaTableCompletionItems(index: LaravelIndex): CompletionItem[] {
+  return index.schemaTables.map((table) => ({
+    label: table.name,
+    kind: CompletionItemKind.Struct,
+    detail: `Schema table ${table.columns.length} columns`,
+    data: { filePath: table.filePath },
+  }));
+}
+
+function schemaColumnCompletionItems(index: LaravelIndex, tableName: string): CompletionItem[] {
+  return (
+    index.schemaTables
+      .find((table) => table.name === tableName)
+      ?.columns.map((column) => ({
+        label: column.name,
+        kind: CompletionItemKind.Field,
+        detail: schemaColumnDetail(column),
+        data: { filePath: column.filePath, tableName: column.tableName },
+      })) ?? []
+  );
 }
 
 function isInsideTranslationKeyString(linePrefix: string): boolean {
@@ -862,6 +1008,29 @@ function isInsideArtisanCommandString(linePrefix: string): boolean {
     /(?:\$this|static|self)->(?:call|callSilent)\(\s*['"][^'"]*$/.test(linePrefix) ||
     /\bSchedule::command\(\s*['"][^'"]*$/.test(linePrefix) ||
     /->command\(\s*['"][^'"]*$/.test(linePrefix);
+}
+
+function isInsideStorageDiskString(linePrefix: string): boolean {
+  return /\bStorage::(?:disk|drive|fake|persistentFake)\(\s*['"][^'"]*$/.test(linePrefix);
+}
+
+// Disk names come from the `filesystems.disks.<name>` config keys already in
+// the index, so no dedicated filesystems parser is needed.
+function storageDiskCompletionItems(index: LaravelIndex): CompletionItem[] {
+  const disks = new Map<string, string>();
+  for (const entry of index.configEntries) {
+    const match = /^filesystems\.disks\.([A-Za-z0-9_-]+)/.exec(entry.key);
+    if (match && !disks.has(match[1])) {
+      disks.set(match[1], entry.filePath);
+    }
+  }
+
+  return [...disks.entries()].map(([name, filePath]) => ({
+    label: name,
+    kind: CompletionItemKind.Value,
+    detail: "Laravel filesystem disk",
+    data: { filePath },
+  }));
 }
 
 function isInsideMiddlewareString(linePrefix: string): boolean {

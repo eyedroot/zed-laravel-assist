@@ -10,6 +10,9 @@ export function diagnosticsForDocument(document: TextDocument, index: LaravelInd
   const documentText = document.getText();
   const routeNames = new Set(index.routes.map((route) => route.name).filter((name): name is string => Boolean(name)));
   const viewNames = new Set(index.bladeViews.map((view) => view.name));
+  // Empty when the project has no indexed page directory; the diagnostic
+  // stays silent then so non-Inertia projects are never flagged.
+  const inertiaPageNames = new Set(index.inertiaPages.map((page) => page.name));
   const componentNames = new Set(index.bladeComponents.map((component) => component.name));
   const configKeys = new Set(index.configKeys);
   const envKeys = new Set(index.envKeys);
@@ -235,6 +238,9 @@ export function diagnosticsForDocument(document: TextDocument, index: LaravelInd
       if (context.kind === "view" && !viewNames.has(context.value)) {
         diagnostics.push(unresolvedDiagnostic(lineIndex, context, `Unknown Blade view '${context.value}'.`));
       }
+      if (context.kind === "inertiaPage" && inertiaPageNames.size > 0 && !inertiaPageNames.has(context.value)) {
+        diagnostics.push(unresolvedDiagnostic(lineIndex, context, `Unknown Inertia page '${context.value}'.`));
+      }
       if (context.kind === "config" && !configKeys.has(context.value)) {
         diagnostics.push(unresolvedDiagnostic(lineIndex, context, `Unknown Laravel config key '${context.value}'.`));
       }
@@ -298,6 +304,7 @@ export interface LaravelDiagnosticData {
     | "controllerAction"
     | "env"
     | "factoryState"
+    | "inertiaPage"
     | "modelAttribute"
     | "middleware"
     | "policyConvention"
@@ -839,6 +846,13 @@ function diagnosticKindForPrefix(prefix: string): DiagnosticStringContext["kind"
   }
   if (/\bview\s*\(\s*$/.test(prefix) || /@(extends|include|includeIf|includeWhen|includeUnless|includeFirst|each|component)\s*\(\s*$/.test(prefix)) {
     return "view";
+  }
+  if (
+    /\bInertia::render\s*\(\s*$/.test(prefix) ||
+    /(?<!::)\binertia\s*\(\s*$/.test(prefix) ||
+    /\bRoute::inertia\s*\(\s*['"][^'"]*['"]\s*,\s*$/.test(prefix)
+  ) {
+    return "inertiaPage";
   }
   if (/\bconfig\s*\(\s*$/.test(prefix)) {
     return "config";

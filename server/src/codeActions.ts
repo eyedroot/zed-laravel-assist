@@ -214,6 +214,8 @@ function allCandidates(data: LaravelDiagnosticData, index: LaravelIndex): string
           .filter((factory) => factory.model === data.model || factory.model?.split("\\").at(-1) === data.model)
           .flatMap((factory) => factory.states)
         : [];
+    case "inertiaPage":
+      return index.inertiaPages.map((page) => page.name);
     case "middleware":
       return index.middleware.map((middleware) => middleware.alias);
     case "modelAttribute":

@@ -355,6 +355,32 @@ describe("Laravel hovers", () => {
     });
   });
 
+  it("shows schema table and column metadata inside DB::table chains", () => {
+    const source = "<?php\nDB::table('users')->orderBy('email')";
+    const line = source.split("\n")[1];
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/ReportController.php",
+      "php",
+      1,
+      source,
+    );
+
+    expect(hoverForDocument(document, { line: 1, character: line.indexOf("users") + 1 }, indexFixture)).toEqual({
+      contents: {
+        kind: "markdown",
+        value:
+          "**Schema table** `users`\n- Columns: `email, status`\n- File: `/app/database/migrations/2024_01_01_000000_create_users_table.php`",
+      },
+    });
+    expect(hoverForDocument(document, { line: 1, character: line.indexOf("email") + 1 }, indexFixture)).toEqual({
+      contents: {
+        kind: "markdown",
+        value:
+          "**Schema column** `users.email`\n- Type: `string`\n- Modifiers: `unique`\n- File: `/app/database/migrations/2024_01_01_000000_create_users_table.php`",
+      },
+    });
+  });
+
   it("shows schema table and column metadata inside validation Rule calls", () => {
     const source = "<?php\nRule::exists('users', 'email')";
     const line = source.split("\n")[1];

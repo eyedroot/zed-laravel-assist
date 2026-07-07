@@ -271,6 +271,52 @@ describe("Laravel definitions", () => {
     ]);
   });
 
+  it("resolves Inertia page definitions in render contexts", () => {
+    const source = "<?php\nreturn Inertia::render('Users/Index', []);";
+    const line = source.split("\n")[1];
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      source,
+    );
+
+    expect(definitionsForDocument(document, { line: 1, character: line.indexOf("Users/Index") + 1 }, indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/resources/js/Pages/Users/Index.vue",
+      },
+    ]);
+  });
+
+  it("resolves schema table and column definitions inside DB::table chains", () => {
+    const source = "<?php\nDB::table('users')->where('email', 'a')";
+    const line = source.split("\n")[1];
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/ReportController.php",
+      "php",
+      1,
+      source,
+    );
+
+    const migrationLocation = {
+      range: {
+        end: { character: 0, line: 0 },
+        start: { character: 0, line: 0 },
+      },
+      uri: "file:///app/database/migrations/2024_01_01_000000_create_users_table.php",
+    };
+    expect(definitionsForDocument(document, { line: 1, character: line.indexOf("users") + 1 }, indexFixture)).toEqual([
+      migrationLocation,
+    ]);
+    expect(definitionsForDocument(document, { line: 1, character: line.indexOf("email") + 1 }, indexFixture)).toEqual([
+      migrationLocation,
+    ]);
+  });
+
   it("resolves schema table and column definitions inside validation Rule calls", () => {
     const tableSource = "<?php\nRule::exists('users', 'email')";
     const columnSource = "<?php\nRule::exists('users', 'email')";
@@ -860,6 +906,9 @@ describe("Laravel definitions", () => {
 
 const indexFixture: LaravelIndex = {
   ...emptyIndex(),
+  inertiaPages: [
+    { filePath: "/app/resources/js/Pages/Users/Index.vue", name: "Users/Index" },
+  ],
   authUserModel: "App\\Models\\User",
   bladeComponents: [
     {

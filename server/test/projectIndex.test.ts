@@ -16,6 +16,7 @@ import {
   extractEnvKeys,
   extractFactoryInfo,
   extractFacadeInfo,
+  extractInertiaPageInfo,
   extractLaravelArtifacts,
   extractMacroInfo,
   extractMiddlewareInfo,
@@ -1624,6 +1625,21 @@ describe("project index extraction", () => {
     }
   });
 
+  it("derives Inertia page names from page files", () => {
+    expect(extractInertiaPageInfo("/app", "/app/resources/js/Pages/Users/Index.vue")).toEqual({
+      filePath: "/app/resources/js/Pages/Users/Index.vue",
+      name: "Users/Index",
+    });
+    expect(extractInertiaPageInfo("/app", "/app/resources/js/pages/settings/profile.tsx")).toEqual({
+      filePath: "/app/resources/js/pages/settings/profile.tsx",
+      name: "settings/profile",
+    });
+    expect(extractInertiaPageInfo("/app", "/app/resources/js/Pages/Dashboard.svelte")).toEqual({
+      filePath: "/app/resources/js/Pages/Dashboard.svelte",
+      name: "Dashboard",
+    });
+  });
+
   it("maps changed paths to index kinds", () => {
     const rootPath = "/app";
 
@@ -1631,6 +1647,13 @@ describe("project index extraction", () => {
     expect(indexFileKindForPath(rootPath, "/app/resources/views/users/index.blade.php")).toBe(
       "view",
     );
+    expect(indexFileKindForPath(rootPath, "/app/resources/js/Pages/Users/Index.vue")).toBe(
+      "inertiaPage",
+    );
+    expect(indexFileKindForPath(rootPath, "/app/resources/js/pages/settings/profile.tsx")).toBe(
+      "inertiaPage",
+    );
+    expect(indexFileKindForPath(rootPath, "/app/resources/js/Pages/types.d.ts")).toBe(null);
     expect(indexFileKindForPath(rootPath, "/app/config/app.php")).toBe("config");
     expect(indexFileKindForPath(rootPath, "/app/bootstrap/providers.php")).toBe("provider");
     expect(indexFileKindForPath(rootPath, "/app/composer.json")).toBe("provider");

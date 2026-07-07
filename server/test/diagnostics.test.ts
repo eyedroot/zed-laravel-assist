@@ -460,6 +460,32 @@ describe("Laravel diagnostics", () => {
     ]);
   });
 
+  it("reports unresolved Inertia pages only when pages are indexed", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "Inertia::render('Users/Index');",
+        "Inertia::render('Users/Missing');",
+      ].join("\n"),
+    );
+
+    expect(diagnosticsForDocument(document, indexFixture)).toEqual([
+      expect.objectContaining({
+        data: {
+          kind: "inertiaPage",
+          value: "Users/Missing",
+        },
+        message: "Unknown Inertia page 'Users/Missing'.",
+        range: { end: { character: 30, line: 2 }, start: { character: 17, line: 2 } },
+      }),
+    ]);
+
+    expect(diagnosticsForDocument(document, { ...indexFixture, inertiaPages: [] })).toEqual([]);
+  });
+
   it("reports policy, request, and resource naming convention mismatches", () => {
     const policyMapDocument = TextDocument.create(
       "file:///app/app/Providers/AuthServiceProvider.php",
@@ -537,6 +563,9 @@ describe("Laravel diagnostics", () => {
 
 const indexFixture: LaravelIndex = {
   ...emptyIndex(),
+  inertiaPages: [
+    { filePath: "/app/resources/js/Pages/Users/Index.vue", name: "Users/Index" },
+  ],
   bladeComponents: [
     {
       filePath: "/app/app/View/Components/Forms/Input.php",

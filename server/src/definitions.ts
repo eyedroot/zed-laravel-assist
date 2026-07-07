@@ -132,6 +132,12 @@ export function definitionsForDocument(
       .map((view) => Location.create(pathToFileURL(view.filePath).toString(), startRange()));
   }
 
+  if (context.kind === "inertiaPage") {
+    return index.inertiaPages
+      .filter((page) => page.name === context.value)
+      .map((page) => Location.create(pathToFileURL(page.filePath).toString(), startRange()));
+  }
+
   if (context.kind === "bladeSection") {
     return index.bladeViews
       .filter((view) => view.name === context.model && view.yields.includes(context.value))
@@ -228,7 +234,7 @@ export function definitionsForDocument(
 
 type DefinitionStringContext =
   | {
-  kind: "authorization" | "command" | "config" | "container" | "env" | "middleware" | "route" | "translation" | "validationField" | "view";
+  kind: "authorization" | "command" | "config" | "container" | "env" | "inertiaPage" | "middleware" | "route" | "translation" | "validationField" | "view";
   value: string;
 }
   | {
@@ -267,7 +273,7 @@ type DefinitionStringContext =
     };
 type DefinitionSimpleKind = Extract<
   DefinitionStringContext,
-  { kind: "authorization" | "command" | "config" | "container" | "env" | "middleware" | "route" | "translation" | "validationField" | "view" }
+  { kind: "authorization" | "command" | "config" | "container" | "env" | "inertiaPage" | "middleware" | "route" | "translation" | "validationField" | "view" }
 >["kind"];
 
 function componentContextAtPosition(
@@ -1147,6 +1153,14 @@ function definitionKindForPrefix(prefix: string): DefinitionSimpleKind | null {
     return "view";
   }
 
+  if (
+    /\bInertia::render\s*\(\s*$/.test(prefix) ||
+    /(?<!::)\binertia\s*\(\s*$/.test(prefix) ||
+    /\bRoute::inertia\s*\(\s*['"][^'"]*['"]\s*,\s*$/.test(prefix)
+  ) {
+    return "inertiaPage";
+  }
+
   if (/(__|trans|trans_choice)\s*\(\s*$/.test(prefix) || /@(lang|choice)\s*\(\s*$/.test(prefix)) {
     return "translation";
   }
@@ -1195,6 +1209,9 @@ function definitionKindForPrefix(prefix: string): DefinitionSimpleKind | null {
   return null;
 }
 
+const DB_COLUMN_ARGUMENT_METHODS =
+  "(?:where|orWhere|whereIn|orWhereIn|whereNotIn|whereNull|whereNotNull|whereBetween|whereDate|whereNot|firstWhere|orderBy|orderByDesc|latest|oldest|value|pluck|select|addSelect|groupBy|min|max|sum|avg)";
+
 function validationSchemaContextForPrefix(
   prefix: string,
   value: string,
@@ -1204,7 +1221,21 @@ function validationSchemaContextForPrefix(
     return { kind: "schemaColumn", tableName: columnMatch[1], value };
   }
 
-  return /\bRule::(?:exists|unique)\(\s*$/.test(prefix) ? { kind: "schemaTable", value } : null;
+  const dbColumnMatch = new RegExp(
+    `\\bDB::(?:connection\\([^)]*\\)\\s*->\\s*)?table\\(\\s*['"]([A-Za-z0-9_]+)['"]\\s*\\)[^;\\n]*->\\s*${DB_COLUMN_ARGUMENT_METHODS}\\s*\\(\\s*(?:\\[\\s*)?$`,
+  ).exec(prefix);
+  if (dbColumnMatch) {
+    return { kind: "schemaColumn", tableName: dbColumnMatch[1], value };
+  }
+
+  if (
+    /\bRule::(?:exists|unique)\(\s*$/.test(prefix) ||
+    /\bDB::(?:connection\([^)]*\)\s*->\s*)?table\(\s*$/.test(prefix)
+  ) {
+    return { kind: "schemaTable", value };
+  }
+
+  return null;
 }
 
 function isRouteNamePrefix(prefix: string): boolean {

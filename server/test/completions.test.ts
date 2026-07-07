@@ -196,6 +196,186 @@ describe("Laravel completions", () => {
     );
   });
 
+  it("completes validation rule names inside rule strings", () => {
+    const lines = [
+      "<?php",
+      "class StoreUserRequest extends FormRequest",
+      "{",
+      "    public function rules(): array",
+      "    {",
+      "        return [",
+      "            'email' => 'required|",
+    ];
+    const document = TextDocument.create(
+      "file:///app/app/Http/Requests/StoreUserRequest.php",
+      "php",
+      1,
+      lines.join("\n"),
+    );
+
+    expect(completionsForDocument(document, { line: 6, character: lines[6].length }, indexFixture)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ detail: "Laravel validation rule", label: "string" }),
+        expect.objectContaining({ detail: "Laravel validation rule", label: "exists" }),
+      ]),
+    );
+
+    const arrayFormLine = "            'email' => ['required', '";
+    const arrayDocument = TextDocument.create(
+      "file:///app/app/Http/Requests/StoreUserRequest.php",
+      "php",
+      1,
+      [...lines.slice(0, 6), arrayFormLine].join("\n"),
+    );
+    expect(completionsForDocument(arrayDocument, { line: 6, character: arrayFormLine.length }, indexFixture)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ detail: "Laravel validation rule", label: "nullable" }),
+      ]),
+    );
+
+    const validateLine = "$request->validate(['email' => '";
+    const validateDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      `<?php\n${validateLine}`,
+    );
+    expect(completionsForDocument(validateDocument, { line: 1, character: validateLine.length }, indexFixture)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ detail: "Laravel validation rule", label: "required" }),
+      ]),
+    );
+
+    const outsideLine = "$value = ['email' => 'requi";
+    const outsideDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      `<?php\n${outsideLine}`,
+    );
+    expect(completionsForDocument(outsideDocument, { line: 1, character: outsideLine.length }, indexFixture)).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ label: "required" })]),
+    );
+  });
+
+  it("completes Inertia page names in render contexts", () => {
+    const expected = expect.arrayContaining([
+      expect.objectContaining({ detail: "Inertia page", label: "Users/Index" }),
+      expect.objectContaining({ detail: "Inertia page", label: "Dashboard" }),
+    ]);
+
+    for (const line of ["Inertia::render('", "return inertia('", "Route::inertia('/users', '"]) {
+      const document = TextDocument.create(
+        "file:///app/app/Http/Controllers/UserController.php",
+        "php",
+        1,
+        `<?php\n${line}`,
+      );
+      expect(completionsForDocument(document, { line: 1, character: line.length }, indexFixture)).toEqual(expected);
+    }
+
+    const uriLine = "Route::inertia('";
+    const uriDocument = TextDocument.create(
+      "file:///app/routes/web.php",
+      "php",
+      1,
+      `<?php\n${uriLine}`,
+    );
+    expect(completionsForDocument(uriDocument, { line: 1, character: uriLine.length }, indexFixture)).not.toEqual(expected);
+  });
+
+  it("completes filesystem disk names inside Storage::disk calls", () => {
+    const line = "Storage::disk('";
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UploadController.php",
+      "php",
+      1,
+      `<?php\n${line}`,
+    );
+
+    expect(completionsForDocument(document, { line: 1, character: line.length }, indexFixture)).toEqual([
+      expect.objectContaining({ detail: "Laravel filesystem disk", label: "local" }),
+      expect.objectContaining({ detail: "Laravel filesystem disk", label: "s3" }),
+    ]);
+  });
+
+  it("completes schema tables and columns in DB::table query chains", () => {
+    const tableLine = "DB::table('";
+    const tableDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/ReportController.php",
+      "php",
+      1,
+      `<?php\n${tableLine}`,
+    );
+    expect(completionsForDocument(tableDocument, { line: 1, character: tableLine.length }, indexFixture)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ detail: "Schema table 3 columns", label: "users" }),
+      ]),
+    );
+
+    const columnLine = "DB::table('users')->where('";
+    const columnDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/ReportController.php",
+      "php",
+      1,
+      `<?php\n${columnLine}`,
+    );
+    expect(completionsForDocument(columnDocument, { line: 1, character: columnLine.length }, indexFixture)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ detail: "users string unique", label: "email" }),
+      ]),
+    );
+
+    const connectionLine = "DB::connection('reporting')->table('";
+    const connectionDocument = TextDocument.create(
+      "file:///app/app/Http/Controllers/ReportController.php",
+      "php",
+      1,
+      `<?php\n${connectionLine}`,
+    );
+    expect(completionsForDocument(connectionDocument, { line: 1, character: connectionLine.length }, indexFixture)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ detail: "Schema table 3 columns", label: "users" }),
+      ]),
+    );
+  });
+
+  it("completes schema tables and columns after exists:/unique: in rule strings", () => {
+    const lines = [
+      "<?php",
+      "class StoreUserRequest extends FormRequest",
+      "{",
+      "    public function rules(): array",
+      "    {",
+      "        return [",
+      "            'team_id' => 'required|exists:",
+    ];
+    const tableDocument = TextDocument.create(
+      "file:///app/app/Http/Requests/StoreUserRequest.php",
+      "php",
+      1,
+      lines.join("\n"),
+    );
+    expect(completionsForDocument(tableDocument, { line: 6, character: lines[6].length }, indexFixture)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ detail: "Schema table 3 columns", label: "users" }),
+      ]),
+    );
+
+    const columnLine = "            'team_id' => 'required|exists:users,";
+    const columnDocument = TextDocument.create(
+      "file:///app/app/Http/Requests/StoreUserRequest.php",
+      "php",
+      1,
+      [...lines.slice(0, 6), columnLine].join("\n"),
+    );
+    expect(completionsForDocument(columnDocument, { line: 6, character: columnLine.length }, indexFixture)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ detail: "users foreignId", label: "team_id" }),
+      ]),
+    );
+  });
+
   it("completes translation keys inside translation helpers", () => {
     const document = TextDocument.create(
       "file:///app/app/Http/Controllers/UserController.php",
@@ -744,6 +924,22 @@ describe("Laravel completions", () => {
 
 const indexFixture: LaravelIndex = {
   ...emptyIndex(),
+  inertiaPages: [
+    { filePath: "/app/resources/js/Pages/Users/Index.vue", name: "Users/Index" },
+    { filePath: "/app/resources/js/Pages/Dashboard.vue", name: "Dashboard" },
+  ],
+  configEntries: [
+    {
+      filePath: "/app/config/filesystems.php",
+      key: "filesystems.disks.local.driver",
+      range: { end: { character: 0, line: 10 }, start: { character: 0, line: 10 } },
+    },
+    {
+      filePath: "/app/config/filesystems.php",
+      key: "filesystems.disks.s3.driver",
+      range: { end: { character: 0, line: 20 }, start: { character: 0, line: 20 } },
+    },
+  ],
   authorization: [
     {
       ability: "publish-posts",

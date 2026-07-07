@@ -60,3 +60,20 @@
 - [x] robust Zed extension install/update flow
 - [x] extension registry readiness checklist
 - [x] fixture projects for regression tests
+
+## Phase 6: Editor Surface (shipped, previously undocumented)
+
+- [x] hover documentation for indexed Laravel concepts (routes, views, config/env, translations, models, validation, artifacts, facades, middleware, container, authorization)
+- [x] quick fixes for diagnostics: typo replacement across indexed concepts and `Auth::user()` type narrowing
+- [x] document and workspace symbols for indexed Laravel concepts
+- [x] route inlay hints (method, URI, and route name at declaration lines)
+- [x] Eloquent builder chain completions, dispatch constructor signatures, and root facade aliases (Laravel Idea parity P1-P3)
+
+## Phase 7: Laravel Idea Parity — Remaining Absorption
+
+- [x] validation rule name completions inside rule strings (`required|string|exists:table,column`)
+- [x] `DB::table(...)` table name and chained column completions, hover, and definitions
+- [x] `Storage::disk(...)` disk name completions from filesystems config
+- [x] Inertia page completions, navigation, missing-page diagnostics, and typo quick fixes
+- [ ] Livewire component intelligence (deferred: needs a Livewire fixture project)
+- [ ] code generation commands (deferred: LSP quick fixes only, no file scaffolding yet)

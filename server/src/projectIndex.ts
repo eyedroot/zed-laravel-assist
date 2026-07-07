@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { resolvePhpClassReference } from "./phpResolver.js";
 
-export const LARAVEL_INDEX_CACHE_VERSION = 33;
+export const LARAVEL_INDEX_CACHE_VERSION = 34;
 
 export interface LaravelIndex {
   // FQN configured at `auth.providers.users.model`, when the project sets one.
@@ -20,6 +20,7 @@ export interface LaravelIndex {
   artifacts: LaravelArtifactInfo[];
   factories: FactoryInfo[];
   facades: FacadeInfo[];
+  inertiaPages: InertiaPageInfo[];
   macros: MacroInfo[];
   middleware: MiddlewareInfo[];
   models: ModelInfo[];
@@ -189,6 +190,13 @@ export interface TranslationKeyInfo {
   locale: string;
   namespace: string | null;
   source: "json" | "php";
+}
+
+// Inertia page component under `resources/js/Pages` (or lowercase `pages`),
+// addressed by its `Inertia::render('Users/Index')` name.
+export interface InertiaPageInfo {
+  filePath: string;
+  name: string;
 }
 
 export interface ConfigKeyInfo {
@@ -394,6 +402,7 @@ export type LaravelIndexFileKind =
   | "env"
   | "factory"
   | "facade"
+  | "inertiaPage"
   | "macro"
   | "middleware"
   | "model"
@@ -423,6 +432,7 @@ export interface CachedIndexFile {
     | EnvKeyInfo[]
     | FactoryInfo[]
     | FacadeInfo[]
+    | InertiaPageInfo[]
     | MacroInfo[]
     | MiddlewareInfo[]
     | ServiceProviderInfo[]
@@ -477,6 +487,7 @@ export function emptyIndex(): LaravelIndex {
     envKeys: [],
     factories: [],
     facades: [],
+    inertiaPages: [],
     macros: [],
     middleware: [],
     models: [],
@@ -582,6 +593,7 @@ export function indexFromCache(cache: LaravelIndexCache): LaravelIndex {
   const envEntries: EnvKeyInfo[] = [];
   const factories: FactoryInfo[] = [];
   const facades: FacadeInfo[] = [];
+  const inertiaPages: InertiaPageInfo[] = [];
   const macros: MacroInfo[] = [];
   const middleware: MiddlewareInfo[] = [];
   const models: ModelInfo[] = [];
@@ -628,6 +640,9 @@ export function indexFromCache(cache: LaravelIndexCache): LaravelIndex {
         break;
       case "facade":
         facades.push(...(file.entries as FacadeInfo[]));
+        break;
+      case "inertiaPage":
+        inertiaPages.push(...(file.entries as InertiaPageInfo[]));
         break;
       case "macro":
         macros.push(...(file.entries as MacroInfo[]));
@@ -678,6 +693,7 @@ export function indexFromCache(cache: LaravelIndexCache): LaravelIndex {
       resolveFacadeBindings(uniqueFacades([...builtInLaravelFacadeAliases(cache.rootPath), ...facades]), uniqueBindings),
       (facade) => facade.className,
     ),
+    inertiaPages: sortBy(inertiaPages, (page) => page.name),
     macros: sortBy(uniqueMacros(macros), (macro) => `${macro.className}:${macro.method}`),
     middleware: sortBy(uniqueMiddleware(middleware), (entry) => entry.alias),
     models: sortBy(resolveCustomModelBuilders(applyModelTraits(models)), (model) => model.className),
@@ -2927,6 +2943,9 @@ async function collectIndexFileCandidates(rootPath: string): Promise<IndexFileCa
     addFiles("view", path.join(rootPath, "resources", "views"), (filePath) =>
       filePath.endsWith(".blade.php"),
     ),
+    ...(await inertiaPageDirectoryRoots(rootPath)).map((pagesRoot) =>
+      addFiles("inertiaPage", pagesRoot, isInertiaPageFile),
+    ),
     addFiles("config", path.join(rootPath, "config"), (filePath) => filePath.endsWith(".php")),
     addFiles("model", path.join(rootPath, "app", "Models"), (filePath) =>
       filePath.endsWith(".php"),
@@ -3023,6 +3042,13 @@ function indexFileKindsForPath(rootPath: string, filePath: string): LaravelIndex
     filePath.endsWith(".blade.php")
   ) {
     return ["view"];
+  }
+
+  if (
+    new RegExp(`^resources\\${path.sep}js\\${path.sep}[Pp]ages\\${path.sep}`).test(relativePath) &&
+    isInertiaPageFile(filePath)
+  ) {
+    return ["inertiaPage"];
   }
 
   if (relativePath.startsWith(`config${path.sep}`) && filePath.endsWith(".php")) {
@@ -3141,6 +3167,7 @@ async function indexFile(
   | EnvKeyInfo[]
   | FactoryInfo[]
   | FacadeInfo[]
+  | InertiaPageInfo[]
   | MacroInfo[]
   | MiddlewareInfo[]
   | ModelInfo[]
@@ -3176,6 +3203,8 @@ async function indexFile(
       return extractFactoryInfo(filePath, await safeRead(filePath));
     case "facade":
       return extractFacadeInfo(filePath, await safeRead(filePath));
+    case "inertiaPage":
+      return [extractInertiaPageInfo(rootPath, filePath)];
     case "macro":
       return extractMacroInfo(filePath, await safeRead(filePath));
     case "middleware":
@@ -3225,6 +3254,38 @@ function routeMountContext(source: string, relativePath: string): Partial<RouteC
 
 function isTranslationFile(filePath: string): boolean {
   return filePath.endsWith(".php") || filePath.endsWith(".json");
+}
+
+const INERTIA_PAGE_EXTENSIONS = [".vue", ".jsx", ".tsx", ".svelte", ".js", ".ts"];
+
+function isInertiaPageFile(filePath: string): boolean {
+  return !filePath.endsWith(".d.ts") &&
+    INERTIA_PAGE_EXTENSIONS.some((extension) => filePath.endsWith(extension));
+}
+
+// Resolves the Inertia page directory (`resources/js/Pages` or lowercase
+// `pages`) by its exact on-disk name so case-insensitive filesystems do not
+// yield the same tree twice.
+async function inertiaPageDirectoryRoots(rootPath: string): Promise<string[]> {
+  try {
+    const jsRoot = path.join(rootPath, "resources", "js");
+    const entries = await readdir(jsRoot, { withFileTypes: true });
+    return entries
+      .filter((entry) => entry.isDirectory() && /^pages$/i.test(entry.name))
+      .map((entry) => path.join(jsRoot, entry.name));
+  } catch {
+    return [];
+  }
+}
+
+export function extractInertiaPageInfo(rootPath: string, filePath: string): InertiaPageInfo {
+  const relativePath = path.relative(path.join(rootPath, "resources", "js"), filePath);
+  const segments = relativePath.split(path.sep);
+  const withoutPagesRoot = /^pages$/i.test(segments[0] ?? "") ? segments.slice(1) : segments;
+  return {
+    filePath,
+    name: withoutPagesRoot.join("/").replace(/\.[A-Za-z]+$/, ""),
+  };
 }
 
 // Resolves module directories (`modules/`, `Modules/`) by their exact on-disk
