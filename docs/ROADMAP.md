@@ -67,6 +67,7 @@
 - [x] quick fixes for diagnostics: typo replacement across indexed concepts and `Auth::user()` type narrowing
 - [x] document and workspace symbols for indexed Laravel concepts
 - [x] route inlay hints (method, URI, and route name at declaration lines)
+- [x] usage CodeLens for indexed PHP classes and public methods, gated by Zed's `code_lens` setting
 - [x] Eloquent builder chain completions, dispatch constructor signatures, and root facade aliases (Laravel Idea parity P1-P3)
 
 ## Phase 7: Laravel Idea Parity — Remaining Absorption

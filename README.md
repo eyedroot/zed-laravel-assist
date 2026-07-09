@@ -17,6 +17,7 @@ Current scope:
 - Early go-to-definition support for named routes, route parameters, controller actions, Blade views/components/component props/sections/stacks, config/env keys, translations, authorization abilities, container bindings, Artisan commands, middleware aliases, service providers, Eloquent relations/scopes/custom builders, validated request fields, validation Rule schema tables/columns, `DB::table(...)` tables/columns, PHPUnit mock method strings, Inertia pages, Livewire components, and Livewire wire bindings
 - Early references support for named routes, route parameters, controller actions, Blade views/components/component props/sections/stacks, config/env keys, translations, authorization abilities, container bindings, Artisan commands, middleware aliases, service providers, Eloquent relations/scopes/custom builders, and validated request fields
 - Go-to-implementation support that lists every subclass and interface implementer of an indexed PHP class, interface, trait, or enum, resolved transitively across the inheritance graph (toggleable, on by default)
+- Usage CodeLens support for indexed PHP classes and public methods, with counts that open the matching reference locations when Zed's `code_lens` setting is enabled
 - Early document/workspace symbols for indexed Laravel routes, controllers/actions, views, components, config/env keys, models, schema, translations, commands, middleware, bindings, authorization, service providers, factories, seeders, Eloquent custom builders, and application artifacts
 - Early hover support for named routes, route parameters, controller actions, Blade views/components/component props/sections/stacks, config/env keys, translations, authorization abilities, container bindings, Artisan commands, middleware aliases, service providers, facade aliases, application artifacts, model properties, Eloquent relations/scopes/custom builders, validated request fields, validation Rule schema tables/columns, `DB::table(...)` tables/columns, and PHPUnit mock method strings
 - Early diagnostics for unresolved route, route parameter, controller action, view, component, component prop, Blade section/stack, config, env, translation, authorization, container, command, middleware, service provider, Eloquent relation/scope, factory state, seeder, validated request field, validation Rule schema, Inertia page, and Livewire component references
@@ -525,6 +526,7 @@ Patterns currently extracted:
 - class, interface, trait, and enum declarations, including `abstract`, `final`, and `readonly` modifiers
 - resolved `extends` parents (one for a class or enum, several for an interface)
 - resolved `implements` interfaces, including enum backing types such as `enum Status: string implements HasColor`
+- public method declarations, excluding PHP magic methods
 - multi-line `extends` and `implements` clauses
 
 The class index stores:
@@ -534,10 +536,21 @@ The class index stores:
 - declaration kind and modifiers
 - resolved extends and implements targets
 - the source range of the type name for navigation
+- public method names and source ranges for usage CodeLens and member navigation
 
 This backs the LSP implementation provider (`textDocument/implementation`). Invoking "Go to Implementation" (bound to `shift-f12` by default in Zed) on an abstract class, interface, or any reference to one — its declaration, an `extends`/`implements` clause, a `use` import, or a `Foo::class` reference — lists every type that extends or implements it, transitively. This mirrors the subclass and implementer navigation offered by dedicated PHP IDEs and works without an Intelephense premium license.
 
 The feature is enabled by default and can be turned off; see [Zed Settings](#zed-settings).
+
+### Usage CodeLens
+
+Laravel Assist advertises LSP CodeLens entries for indexed PHP class names and public method names. When Zed's `code_lens` setting is `on` or `menu`, each lens resolves to a usage count such as `1 usage` or `3 usages`. Clicking the lens opens Zed's reference locations for the counted usages.
+
+Zed's `code_lens` setting only controls whether the editor requests and renders CodeLens UI. Laravel Assist still has to advertise `textDocument/codeLens` and return the usage data. If `code_lens` is off, these lenses are hidden; if another PHP language server provides its own CodeLens entries, Zed can render those separately too.
+
+Class usage counts include conservative PHP class-reference sites such as `new Foo`, `Foo::class`, `Foo::bar()`, type hints, `extends`, `implements`, `instanceof`, and `catch` clauses. Import-only `use Foo;` lines and the class declaration itself are not counted.
+
+Method usage counts currently cover typed variable calls, `$this->typedProperty->method(...)`, container-resolved calls such as `app(Foo::class)->method(...)`, direct static calls, `self::method(...)` inside the declaring class, and indexed Laravel route actions such as `[UserController::class, 'show']`.
 
 ### Helper Completions
 
@@ -617,6 +630,7 @@ After installing the extension locally in Zed, enable the language server for PH
 
 ```json
 {
+  "code_lens": "on",
   "inlay_hints": {
     "enabled": true,
     "show_type_hints": true
@@ -630,6 +644,8 @@ After installing the extension locally in Zed, enable the language server for PH
 ```
 
 Route URL inlay hints for `router.php` files are controlled by Zed's type inlay hint setting. If route URL hints do not appear next to `Route::get(...)`, `Route::post(...)`, or similar calls, make sure `show_type_hints` is set to `true`.
+
+Usage CodeLens entries for PHP classes and public methods are controlled by Zed's `code_lens` setting. The setting enables the editor surface; Laravel Assist supplies the actual `textDocument/codeLens` results and resolves them to usage counts.
 
 Blade support will depend on the active Zed language name exposed by the Blade extension installed in the editor.
 

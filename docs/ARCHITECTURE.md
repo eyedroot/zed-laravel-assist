@@ -11,7 +11,7 @@ The Zed extension is intentionally small. It owns:
 - launching the language server with Zed's Node runtime
 - passing user settings and initialization options later
 
-Zed extensions do not provide arbitrary IDE UI surfaces. Advanced behavior should flow through LSP capabilities such as completion, hover, definition, references, diagnostics, code actions, semantic tokens, and workspace commands.
+Zed extensions do not provide arbitrary IDE UI surfaces. Advanced behavior should flow through LSP capabilities such as completion, hover, definition, references, diagnostics, code actions, CodeLens, semantic tokens, and workspace commands.
 
 ## Language Server
 
@@ -24,6 +24,7 @@ The language server owns Laravel knowledge:
 - hover generation for indexed route, route parameter, Blade view, Blade component, Blade component prop, Blade section, Blade stack, config, env, translation, authorization, container, command, middleware, validated request field, and validation Rule schema references
 - go-to-definition generation for indexed route, route parameter, Blade view, Blade component, Blade component prop, Blade section, Blade stack, config, env, translation, authorization, container, command, middleware, validated request field, and validation Rule schema references
 - references generation for indexed route, route parameter, Blade view, Blade component, Blade component prop, Blade section, Blade stack, config, env, translation, authorization, container, command, middleware, and validated request field references
+- CodeLens generation for indexed PHP class and public method usage counts, resolved lazily through `codeLens/resolve`
 - diagnostics for unresolved route, route parameter, Blade view, Blade component, Blade component prop, Blade section, Blade stack, config, env, translation, authorization, container, command, middleware, factory state, seeder, validated request field, and validation Rule schema references
 - quick-fix code actions for unresolved route, route parameter, Blade view, Blade component, Blade component prop, Blade section, Blade stack, config, env, translation, authorization, container, command, middleware, factory state, seeder, validated request field, and validation Rule schema diagnostics, including safe missing Blade file creation
 - future broader code actions
@@ -78,6 +79,8 @@ Factory entries store target model, definition fields, state methods, and source
 Artifact entries store class, namespace, artifact kind, related classes, and source file for events, listeners, jobs, mailables, notifications, and API resources. Known artifact class references use this shard for completions, hovers, go-to-definition, and references in common Laravel contexts such as `event(new ...)`, `dispatch(new ...)`, `Job::dispatch()`, and mail/notification send calls. They live in their own shard so large app-layer directories can refresh independently from model, macro, and validation metadata.
 
 Document and workspace symbols are generated from the cached index instead of reparsing files on demand. This keeps global Laravel navigation fast in large projects while covering routes, controllers/actions, views, Blade components, config keys, env keys, models, relationships, scopes, custom builder methods, schema tables and columns, translations, commands, middleware aliases, container bindings, authorization abilities, service providers, factories, seeders, macros, facades, and application artifacts.
+
+Usage CodeLens uses the same PHP class index that backs implementation navigation and member navigation. `textDocument/codeLens` stays cheap by returning unresolved lenses for indexed class and public method declarations in the open document. Zed requests `codeLens/resolve` only for rendered lenses; Laravel Assist then scans indexed source files for conservative class and method reference sites and returns an `editor.action.showReferences` command with concrete LSP locations. Zed's `code_lens` setting controls whether this UI is requested/rendered, while Laravel Assist controls whether any Laravel-aware usage data exists.
 
 Code actions consume diagnostics and cached index data. Replacement quick fixes suggest close existing route, route parameter, controller action, view, component, component prop, Blade section, Blade stack, config, and env names. Missing Blade view and anonymous component diagnostics can also produce `WorkspaceEdit` file-creation actions, with Laravel names constrained to safe path segments before mapping them into `resources/views` or `resources/views/components`. Model files can produce factory, JSON resource, policy, seeder, and Store/Update FormRequest generation actions when those related files are not already present in the index.
 

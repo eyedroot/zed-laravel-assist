@@ -2,6 +2,8 @@
 import {
   CodeAction,
   CodeActionParams,
+  CodeLens,
+  CodeLensParams,
   CompletionItem,
   CompletionParams,
   createConnection,
@@ -30,6 +32,7 @@ import { fileURLToPath } from "node:url";
 import { TextDocuments } from "vscode-languageserver/node.js";
 import { loadLaravelIndexCache, saveLaravelIndexCache } from "./cacheStore.js";
 import { codeActionsForDiagnostics, OPEN_CONCRETE_BINDING_COMMAND, OpenConcreteBindingCommandArgs } from "./codeActions.js";
+import { codeLensDocumentUri, codeLensesForDocument, resolveUsageCodeLens } from "./codeLens.js";
 import { completionsForDocument } from "./completions.js";
 import { diagnosticsForDocument } from "./diagnostics.js";
 import { definitionsForDocument } from "./definitions.js";
@@ -89,6 +92,9 @@ connection.onInitialize(async (params: InitializeParams): Promise<InitializeResu
       hoverProvider: true,
       inlayHintProvider: true,
       codeActionProvider: true,
+      codeLensProvider: {
+        resolveProvider: true,
+      },
       executeCommandProvider: {
         commands: [OPEN_CONCRETE_BINDING_COMMAND],
       },
@@ -167,6 +173,24 @@ connection.onCodeAction((params: CodeActionParams): CodeAction[] => {
   }
 
   return codeActionsForDiagnostics(params, index, workspaceRoot, documents.get(params.textDocument.uri));
+});
+
+connection.onCodeLens((params: CodeLensParams): CodeLens[] => {
+  const document = documents.get(params.textDocument.uri);
+  if (!document || !laravelProject) {
+    return [];
+  }
+
+  return codeLensesForDocument(document, index);
+});
+
+connection.onCodeLensResolve(async (lens: CodeLens): Promise<CodeLens> => {
+  if (!laravelProject) {
+    return lens;
+  }
+
+  const uri = codeLensDocumentUri(lens);
+  return resolveUsageCodeLens(lens, uri ? documents.get(uri) : undefined, index);
 });
 
 connection.onExecuteCommand(async (params: ExecuteCommandParams) => {
