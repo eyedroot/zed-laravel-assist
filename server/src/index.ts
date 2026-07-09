@@ -13,6 +13,7 @@ import {
   DidChangeWatchedFilesParams,
   Hover,
   HoverParams,
+  ImplementationParams,
   InlayHint,
   InlayHintParams,
   InitializeParams,
@@ -33,6 +34,7 @@ import { completionsForDocument } from "./completions.js";
 import { diagnosticsForDocument } from "./diagnostics.js";
 import { definitionsForDocument } from "./definitions.js";
 import { hoverForDocument } from "./hovers.js";
+import { implementationsForDocument } from "./implementations.js";
 import { inlayHintsForDocument } from "./inlayHints.js";
 import { isLaravelProject } from "./laravelDetection.js";
 import {
@@ -43,6 +45,7 @@ import {
   LaravelIndexCache,
 } from "./projectIndex.js";
 import { referencesForDocument } from "./references.js";
+import { readServerConfig } from "./serverConfig.js";
 import { documentSymbolsForDocument, workspaceSymbolsForQuery } from "./symbols.js";
 
 const connection = createConnection(ProposedFeatures.all);
@@ -50,6 +53,12 @@ const documents = new TextDocuments(TextDocument);
 
 let workspaceRoot: string | null = null;
 let laravelProject = false;
+// "Go to Implementation" for arbitrary PHP types is on by default; users can
+// turn it off through `lsp.laravel-assist.initialization_options` in Zed
+// (`{ "implementations": { "enabled": false } }`) when a licensed PHP server
+// already covers it. Read once at initialize time and used to gate both the
+// advertised capability and the request handler.
+let implementationsEnabled = true;
 let index: LaravelIndex = emptyIndex();
 let indexCache: LaravelIndexCache | null = null;
 let indexInFlight: Promise<void> | null = null;
@@ -60,6 +69,7 @@ let refreshTimer: NodeJS.Timeout | null = null;
 
 connection.onInitialize(async (params: InitializeParams): Promise<InitializeResult> => {
   workspaceRoot = resolveWorkspaceRoot(params);
+  implementationsEnabled = readServerConfig(params.initializationOptions).implementationsEnabled;
 
   if (workspaceRoot) {
     indexCache = await loadLaravelIndexCache(workspaceRoot);
@@ -74,6 +84,7 @@ connection.onInitialize(async (params: InitializeParams): Promise<InitializeResu
         triggerCharacters: ["'", "\"", ".", "\\", ">", ":"],
       },
       definitionProvider: true,
+      implementationProvider: implementationsEnabled,
       referencesProvider: true,
       hoverProvider: true,
       inlayHintProvider: true,
@@ -121,6 +132,15 @@ connection.onReferences(async (params: ReferenceParams): Promise<Location[]> => 
   }
 
   return referencesForDocument(document, params.position, index);
+});
+
+connection.onImplementation((params: ImplementationParams): Location[] => {
+  const document = documents.get(params.textDocument.uri);
+  if (!document || !laravelProject || !implementationsEnabled) {
+    return [];
+  }
+
+  return implementationsForDocument(document, params.position, index);
 });
 
 connection.onHover((params: HoverParams): Hover | null => {
@@ -315,7 +335,7 @@ function takeQueuedChangedFilePaths(): string[] | undefined {
 
 function publishDiagnostics(document: TextDocument): void {
   connection.sendDiagnostics({
-    diagnostics: laravelProject ? diagnosticsForDocument(document, index) : [],
+    diagnostics: laravelProject ? diagnosticsForDocument(document, index, workspaceRoot) : [],
     uri: document.uri,
   });
 }

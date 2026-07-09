@@ -22,6 +22,7 @@ import {
   extractMacroInfo,
   extractMiddlewareInfo,
   extractModelInfo,
+  extractPhpClasses,
   extractRouteInfo,
   extractRouteNames,
   extractSchemaTables,
@@ -34,6 +35,35 @@ import {
 import { resolvePhpClassReference } from "../src/phpResolver.js";
 
 describe("project index extraction", () => {
+  it("extracts public PHP type methods for container-resolved completions", () => {
+    const source = [
+      "<?php",
+      "namespace App\\Services;",
+      "",
+      "interface ServiceAccountInterface",
+      "{",
+      "    public function setGrade(string $plan): void;",
+      "    function register(array $data): void;",
+      "}",
+      "",
+      "class ServiceAccountLibrary implements ServiceAccountInterface",
+      "{",
+      "    public function setGrade(string $plan): void {}",
+      "    protected function internalOnly(): void {}",
+      "}",
+    ].join("\n");
+
+    const classes = extractPhpClasses("/app/app/Services/ServiceAccountLibrary.php", source);
+
+    expect(classes.find((phpClass) => phpClass.fqcn === "App\\Services\\ServiceAccountInterface")?.methods?.map((method) => method.name)).toEqual([
+      "register",
+      "setGrade",
+    ]);
+    expect(classes.find((phpClass) => phpClass.fqcn === "App\\Services\\ServiceAccountLibrary")?.methods?.map((method) => method.name)).toEqual([
+      "setGrade",
+    ]);
+  });
+
   it("extracts Blade view graph metadata", () => {
     const source = `
       @extends('layouts.app')

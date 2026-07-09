@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { resolvePhpClassReference } from "./phpResolver.js";
 
-export const LARAVEL_INDEX_CACHE_VERSION = 37;
+export const LARAVEL_INDEX_CACHE_VERSION = 39;
 
 export interface LaravelIndex {
   // FQN configured at `auth.providers.users.model`, when the project sets one.
@@ -25,6 +25,9 @@ export interface LaravelIndex {
   macros: MacroInfo[];
   middleware: MiddlewareInfo[];
   models: ModelInfo[];
+  // Every declared PHP class/interface/trait/enum in the project source, with
+  // its resolved `extends`/`implements` targets. Backs "Go to Implementation".
+  phpClasses: PhpClassInfo[];
   providers: ServiceProviderInfo[];
   routes: RouteInfo[];
   schemaTables: SchemaTableInfo[];
@@ -251,6 +254,32 @@ export interface ControllerInfo {
   namespace: string | null;
 }
 
+export type PhpClassKind = "class" | "interface" | "trait" | "enum";
+
+// A single declared PHP type (class/interface/trait/enum) with its resolved
+// inheritance targets. `extends` holds the parent(s) — a class has at most one,
+// an interface may have several — and `implements` holds interfaces backed by a
+// `class`/`enum`. All names are stored as fully-qualified names without a
+// leading backslash so they can be matched directly against `fqcn`.
+export interface PhpClassInfo {
+  extends: string[];
+  filePath: string;
+  fqcn: string;
+  implements: string[];
+  isAbstract: boolean;
+  isFinal: boolean;
+  kind: PhpClassKind;
+  methods?: PhpMethodInfo[];
+  name: string;
+  nameRange: SourceRange;
+  namespace: string | null;
+}
+
+export interface PhpMethodInfo {
+  name: string;
+  range: SourceRange;
+}
+
 export interface ControllerActionInfo {
   name: string;
   range: SourceRange;
@@ -421,6 +450,7 @@ export type LaravelIndexFileKind =
   | "macro"
   | "middleware"
   | "model"
+  | "phpClass"
   | "provider"
   | "route"
   | "schema"
@@ -452,6 +482,7 @@ export interface CachedIndexFile {
     | MacroInfo[]
     | MiddlewareInfo[]
     | ServiceProviderInfo[]
+    | PhpClassInfo[]
     | string[]
     | ModelInfo[]
     | RouteInfo[]
@@ -508,6 +539,7 @@ export function emptyIndex(): LaravelIndex {
     macros: [],
     middleware: [],
     models: [],
+    phpClasses: [],
     providers: [],
     routes: [],
     schemaTables: [],
@@ -615,6 +647,7 @@ export function indexFromCache(cache: LaravelIndexCache): LaravelIndex {
   const macros: MacroInfo[] = [];
   const middleware: MiddlewareInfo[] = [];
   const models: ModelInfo[] = [];
+  const phpClasses: PhpClassInfo[] = [];
   const providers: ServiceProviderInfo[] = [];
   const schemaTables: SchemaTableInfo[] = [];
   const seeders: SeederInfo[] = [];
@@ -674,6 +707,9 @@ export function indexFromCache(cache: LaravelIndexCache): LaravelIndex {
       case "model":
         models.push(...(file.entries as ModelInfo[]));
         break;
+      case "phpClass":
+        phpClasses.push(...(file.entries as PhpClassInfo[]));
+        break;
       case "provider":
         providers.push(...(file.entries as ServiceProviderInfo[]));
         break;
@@ -719,6 +755,7 @@ export function indexFromCache(cache: LaravelIndexCache): LaravelIndex {
     macros: sortBy(uniqueMacros(macros), (macro) => `${macro.className}:${macro.method}`),
     middleware: sortBy(uniqueMiddleware(middleware), (entry) => entry.alias),
     models: sortBy(resolveCustomModelBuilders(applyModelTraits(models)), (model) => model.className),
+    phpClasses: sortBy(phpClasses, (phpClass) => `${phpClass.fqcn}:${phpClass.filePath}`),
     providers: sortBy(resolveServiceProviderClasses(providers), (provider) => provider.className),
     schemaTables: mergeSchemaTables(schemaTables),
     seeders: sortBy(uniqueSeeders(seeders), (seeder) => seeder.className),
@@ -1813,6 +1850,177 @@ function phpClassName(source: string): string | null {
 
 function phpNamespace(source: string): string | null {
   return /\bnamespace\s+([^;]+);/.exec(source)?.[1].trim() ?? null;
+}
+
+// Declares every `class`/`interface`/`trait`/`enum` in a file together with the
+// fully-qualified names it extends and implements. This intentionally works for
+// arbitrary PHP types, not just Laravel artifacts, so navigation features can
+// answer "who extends/implements this?" across the whole project. Parsing stays
+// regex-based to match the rest of the indexer; the inheritance clause matcher
+// tolerates modifiers (`abstract`/`final`/`readonly`), multi-line clauses, and
+// enum backing types.
+export function extractPhpClasses(filePath: string, source: string): PhpClassInfo[] {
+  const namespace = phpNamespace(source);
+  const classes: PhpClassInfo[] = [];
+  const declarationPattern =
+    /\b((?:(?:abstract|final|readonly)\s+)*)(class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b([^{;]*)/g;
+
+  for (const match of source.matchAll(declarationPattern)) {
+    const modifiers = match[1] ?? "";
+    const kind = match[2] as PhpClassKind;
+    const name = match[3];
+    const clause = match[4] ?? "";
+
+    // `new class extends Foo {}` and similar anonymous declarations capture a
+    // keyword where the name should be; they have no navigable identity.
+    if (name === "extends" || name === "implements") {
+      continue;
+    }
+
+    const matchStart = match.index ?? 0;
+    const searchFrom = modifiers.length + kind.length;
+    const nameOffset = match[0].indexOf(name, searchFrom);
+    const nameStart = matchStart + (nameOffset >= 0 ? nameOffset : match[0].indexOf(name));
+
+    const { extendsNames, implementsNames } = parseInheritanceClause(clause);
+    const resolve = (reference: string): string => resolvePhpClassReference(source, reference);
+
+    classes.push({
+      extends: uniqueSorted(extendsNames.map(resolve)),
+      filePath,
+      fqcn: namespace ? `${namespace}\\${name}` : name,
+      implements: uniqueSorted(implementsNames.map(resolve)),
+      isAbstract: /\babstract\b/.test(modifiers),
+      isFinal: /\bfinal\b/.test(modifiers),
+      kind,
+      methods: extractPhpClassMethodDetails(source, matchStart, kind),
+      name,
+      nameRange: sourceRangeForOffset(source, nameStart, name.length),
+      namespace,
+    });
+  }
+
+  return classes;
+}
+
+function extractPhpClassMethodDetails(
+  source: string,
+  declarationOffset: number,
+  kind: PhpClassKind,
+): PhpMethodInfo[] {
+  const bodyStart = source.indexOf("{", declarationOffset);
+  if (bodyStart < 0) {
+    return [];
+  }
+
+  const bodyEnd = matchingBraceIndex(source, bodyStart) ?? source.length;
+  const body = source.slice(bodyStart + 1, bodyEnd);
+  const methods = new Map<string, PhpMethodInfo>();
+  const methodPattern = kind === "interface"
+    ? /\b(?:public\s+)?function\s+&?([A-Za-z_][A-Za-z0-9_]*)\s*\(/g
+    : /\b(?:(?:abstract|final|static)\s+)*public\s+(?:(?:abstract|final|static)\s+)*function\s+&?([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+
+  for (const match of body.matchAll(methodPattern)) {
+    const name = match[1];
+    if (name.startsWith("__") || methods.has(name)) {
+      continue;
+    }
+
+    const absoluteOffset = bodyStart + 1 + (match.index ?? 0);
+    const nameOffset = absoluteOffset + match[0].lastIndexOf(name);
+    methods.set(name, {
+      name,
+      range: sourceRangeForOffset(source, nameOffset, name.length),
+    });
+  }
+
+  return sortBy([...methods.values()], (method) => method.name);
+}
+
+function matchingBraceIndex(source: string, openIndex: number): number | null {
+  let depth = 0;
+  let quote: string | null = null;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+    const previous = source[index - 1];
+
+    if (lineComment) {
+      if (char === "\n" || char === "\r") {
+        lineComment = false;
+      }
+      continue;
+    }
+
+    if (blockComment) {
+      if (char === "*" && next === "/") {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote && previous !== "\\") {
+        quote = null;
+      }
+      continue;
+    }
+
+    if ((char === "/" && next === "/") || char === "#") {
+      lineComment = true;
+      index += char === "/" ? 1 : 0;
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseInheritanceClause(clause: string): {
+  extendsNames: string[];
+  implementsNames: string[];
+} {
+  const implementsIndex = clause.search(/\bimplements\b/);
+  const extendsSource = implementsIndex >= 0 ? clause.slice(0, implementsIndex) : clause;
+  const implementsSource =
+    implementsIndex >= 0 ? clause.slice(implementsIndex).replace(/^\s*implements\b/, "") : "";
+
+  const extendsMatch = /\bextends\b([\s\S]*)/.exec(extendsSource);
+  return {
+    extendsNames: extendsMatch ? splitClassNames(extendsMatch[1]) : [],
+    implementsNames: splitClassNames(implementsSource),
+  };
+}
+
+function splitClassNames(source: string): string[] {
+  return source
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => /^\\?[A-Za-z_][A-Za-z0-9_\\]*$/.test(part));
 }
 
 function phpImports(source: string): Map<string, string> {
@@ -3026,6 +3234,10 @@ async function collectIndexFileCandidates(rootPath: string): Promise<IndexFileCa
       filePath.endsWith(".php"),
     ),
     addFiles("model", path.join(rootPath, "app"), (filePath) => filePath.endsWith(".php")),
+    addFiles("phpClass", path.join(rootPath, "app"), (filePath) => filePath.endsWith(".php")),
+    ...moduleRoots.map((moduleRoot) =>
+      addFiles("phpClass", moduleRoot, (filePath) => filePath.endsWith(".php")),
+    ),
     addFiles("schema", path.join(rootPath, "database", "migrations"), (filePath) =>
       filePath.endsWith(".php"),
     ),
@@ -3174,15 +3386,19 @@ function indexFileKindsForPath(rootPath: string, filePath: string): LaravelIndex
     return ["route"];
   }
 
-  if (/^modules$/i.test(relativePath.split(path.sep)[0] ?? "") && filePath.endsWith("Controller.php")) {
-    return ["controller"];
+  if (/^modules$/i.test(relativePath.split(path.sep)[0] ?? "") && filePath.endsWith(".php")) {
+    const kinds: LaravelIndexFileKind[] = ["phpClass"];
+    if (filePath.endsWith("Controller.php")) {
+      kinds.push("controller");
+    }
+    return kinds;
   }
 
   if (
     relativePath.startsWith(`app${path.sep}`) &&
     filePath.endsWith(".php")
   ) {
-    const kinds: LaravelIndexFileKind[] = ["model", "macro"];
+    const kinds: LaravelIndexFileKind[] = ["model", "macro", "phpClass"];
     if (relativePath.startsWith(path.join("app", "Facades") + path.sep)) {
       kinds.push("facade");
     }
@@ -3256,6 +3472,7 @@ async function indexFile(
   | MacroInfo[]
   | MiddlewareInfo[]
   | ModelInfo[]
+  | PhpClassInfo[]
   | ServiceProviderInfo[]
   | RouteInfo[]
   | SchemaTableInfo[]
@@ -3302,6 +3519,8 @@ async function indexFile(
       const info = extractModelInfo(filePath, await safeRead(filePath));
       return info ? [info] : [];
     }
+    case "phpClass":
+      return extractPhpClasses(filePath, await safeRead(filePath));
     case "provider":
       return extractServiceProviderInfo(filePath, await safeRead(filePath));
     case "schema":

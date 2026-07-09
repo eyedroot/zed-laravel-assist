@@ -1,5 +1,6 @@
 use std::{env, path::PathBuf};
 
+use zed_extension_api::settings::LspSettings;
 use zed_extension_api::{self as zed, LanguageServerId, Result};
 
 const SERVER_ID: &str = "laravel-assist";
@@ -63,6 +64,18 @@ impl zed::Extension for LaravelAssistExtension {
             args: vec![self.server_script_path(language_server_id)?, "--stdio".to_string()],
             env: Default::default(),
         })
+    }
+
+    // Forward the user's `lsp.laravel-assist.initialization_options` from Zed
+    // settings to the language server. This is how feature toggles such as
+    // `{ "implementations": { "enabled": false } }` reach the server, which
+    // reads them from the LSP `initialize` request.
+    fn language_server_initialization_options(
+        &mut self,
+        language_server_id: &LanguageServerId,
+        worktree: &zed::Worktree,
+    ) -> Result<Option<zed::serde_json::Value>> {
+        Ok(LspSettings::for_worktree(language_server_id.as_ref(), worktree)?.initialization_options)
     }
 }
 
