@@ -67,6 +67,63 @@ describe("Laravel code actions", () => {
     ]);
   });
 
+  it("suggests sorting named arguments for order diagnostics", () => {
+    const document = TextDocument.create(
+      "file:///app/app/Http/Controllers/UserController.php",
+      "php",
+      1,
+      "<?php\n#[Endpoint(path: '/users', summary: 'Users')]\nclass UserController {}\n",
+    );
+    const diagnostic = {
+      data: {
+        kind: "namedArgumentOrder",
+        replacement: "summary: 'Users', path: '/users'",
+        replacementRange: {
+          end: { character: 43, line: 1 },
+          start: { character: 11, line: 1 },
+        },
+        value: "summary",
+      },
+      message: "Named arguments order does not match parameters order.",
+      range: {
+        end: { character: 34, line: 1 },
+        start: { character: 27, line: 1 },
+      },
+      severity: DiagnosticSeverity.Warning,
+      source: "laravel-assist",
+    };
+    const params: CodeActionParams = {
+      context: {
+        diagnostics: [diagnostic],
+      },
+      range: diagnostic.range,
+      textDocument: {
+        uri: document.uri,
+      },
+    };
+
+    expect(codeActionsForDiagnostics(params, indexFixture, null, document)).toEqual([
+      {
+        diagnostics: [diagnostic],
+        edit: {
+          changes: {
+            [document.uri]: [
+              {
+                newText: "summary: 'Users', path: '/users'",
+                range: {
+                  end: { character: 43, line: 1 },
+                  start: { character: 11, line: 1 },
+                },
+              },
+            ],
+          },
+        },
+        kind: "quickfix",
+        title: "Sort arguments",
+      },
+    ]);
+  });
+
   it("suggests an explicit action to open container-bound concrete implementations", () => {
     const document = TextDocument.create(
       "file:///app/app/Services/WorkspaceUsageService.php",

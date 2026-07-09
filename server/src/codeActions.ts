@@ -49,6 +49,11 @@ export function codeActionsForDiagnostics(
       continue;
     }
 
+    const namedArgumentOrderAction = sortNamedArgumentsAction(params, diagnostic, data);
+    if (namedArgumentOrderAction) {
+      actions.push(namedArgumentOrderAction);
+    }
+
     for (const replacement of replacementCandidates(data, index).slice(0, MAX_QUICK_FIXES_PER_DIAGNOSTIC)) {
       actions.push({
         diagnostics: [diagnostic],
@@ -71,6 +76,27 @@ export function codeActionsForDiagnostics(
   actions.push(...modelGenerationActions(params, index, workspaceRoot));
 
   return actions;
+}
+
+function sortNamedArgumentsAction(
+  params: CodeActionParams,
+  diagnostic: Diagnostic,
+  data: LaravelDiagnosticData,
+): CodeAction | null {
+  if (data.kind !== "namedArgumentOrder" || !data.replacement || !data.replacementRange) {
+    return null;
+  }
+
+  return {
+    diagnostics: [diagnostic],
+    edit: {
+      changes: {
+        [params.textDocument.uri]: [TextEdit.replace(data.replacementRange, data.replacement)],
+      },
+    },
+    kind: CodeActionKind.QuickFix,
+    title: "Sort arguments",
+  };
 }
 
 function openConcreteBindingAction(
@@ -221,17 +247,35 @@ function laravelDiagnosticData(diagnostic: Diagnostic): LaravelDiagnosticData | 
       data.kind === "schemaTable" ||
       data.kind === "routeParameter" ||
       data.kind === "validationField" ||
-      data.kind === "modelAttribute")
+      data.kind === "modelAttribute" ||
+      data.kind === "namedArgumentOrder")
   ) {
     return {
       kind: data.kind,
       model: typeof data.model === "string" ? data.model : undefined,
+      replacement: typeof data.replacement === "string" ? data.replacement : undefined,
+      replacementRange: isRangeLike(data.replacementRange) ? data.replacementRange : undefined,
       tableName: typeof data.tableName === "string" ? data.tableName : undefined,
       value: data.value,
     };
   }
 
   return null;
+}
+
+function isRangeLike(value: unknown): value is LaravelDiagnosticData["replacementRange"] {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+
+  const candidate = value as LaravelDiagnosticData["replacementRange"];
+  return Boolean(
+    candidate &&
+      typeof candidate.start?.line === "number" &&
+      typeof candidate.start.character === "number" &&
+      typeof candidate.end?.line === "number" &&
+      typeof candidate.end.character === "number",
+  );
 }
 
 function replacementCandidates(data: LaravelDiagnosticData, index: LaravelIndex): string[] {
@@ -322,6 +366,7 @@ function allCandidates(data: LaravelDiagnosticData, index: LaravelIndex): string
       return uniqueSorted(index.validationRules.flatMap((ruleSet) => ruleSet.fields.map((field) => field.field)));
     case "view":
       return index.bladeViews.map((view) => view.name);
+    case "namedArgumentOrder":
     case "policyConvention":
     case "requestConvention":
     case "resourceConvention":

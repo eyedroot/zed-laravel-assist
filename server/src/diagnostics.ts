@@ -1,11 +1,13 @@
 import { Diagnostic, DiagnosticSeverity } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { isKnownEloquentBuilderMethod } from "./instanceTypes.js";
 import { LaravelIndex, ValidationFieldInfo } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
 
-export function diagnosticsForDocument(document: TextDocument, index: LaravelIndex): Diagnostic[] {
+export function diagnosticsForDocument(document: TextDocument, index: LaravelIndex, workspaceRoot: string | null = null): Diagnostic[] {
   const diagnostics: Diagnostic[] = [];
   const documentText = document.getText();
   const routeNames = new Set(index.routes.map((route) => route.name).filter((name): name is string => Boolean(name)));
@@ -300,6 +302,8 @@ export function diagnosticsForDocument(document: TextDocument, index: LaravelInd
     }
   }
 
+  diagnostics.push(...namedArgumentOrderDiagnostics(document, index, workspaceRoot));
+
   return diagnostics;
 }
 
@@ -320,6 +324,7 @@ export interface LaravelDiagnosticData {
     | "inertiaPage"
     | "livewireComponent"
     | "modelAttribute"
+    | "namedArgumentOrder"
     | "middleware"
     | "policyConvention"
     | "relation"
@@ -336,6 +341,11 @@ export interface LaravelDiagnosticData {
     | "validationField"
     | "view";
   model?: string;
+  replacement?: string;
+  replacementRange?: {
+    end: { character: number; line: number };
+    start: { character: number; line: number };
+  };
   tableName?: string;
   value: string;
 }
@@ -1121,6 +1131,565 @@ function unresolvedDiagnostic(
     },
     severity: DiagnosticSeverity.Warning,
     source: "laravel-assist",
+  };
+}
+
+type ConstructorCall = {
+  classReference: string;
+  closeParen: number;
+  openParen: number;
+};
+
+type NamedArgument = {
+  chunkEnd: number;
+  chunkStart: number;
+  name: string;
+  nameEnd: number;
+  nameStart: number;
+  order: number;
+  text: string;
+};
+
+type PhpClassLikeInfo = {
+  extendsName: string | null;
+  fqcn: string;
+  methods: Map<string, string[]>;
+  traits: string[];
+};
+
+type ComposerAutoloadInfo = {
+  classMap: Map<string, string>;
+  prefixes: Array<{ paths: string[]; prefix: string }>;
+};
+
+const composerAutoloadCache = new Map<string, ComposerAutoloadInfo>();
+const phpClassLikeCache = new Map<string, PhpClassLikeInfo[]>();
+
+function namedArgumentOrderDiagnostics(
+  document: TextDocument,
+  index: LaravelIndex,
+  workspaceRoot: string | null,
+): Diagnostic[] {
+  if (!/:\s*/.test(document.getText())) {
+    return [];
+  }
+
+  const source = document.getText();
+  const sanitized = maskPhpStringsAndComments(source);
+  const diagnostics: Diagnostic[] = [];
+
+  for (const call of constructorCallsInSource(sanitized)) {
+    const parameterNames = constructorParameterNames(
+      resolvePhpClassReference(source, call.classReference),
+      index,
+      workspaceRoot,
+      new Set(),
+    );
+    if (!parameterNames || parameterNames.length < 2) {
+      continue;
+    }
+
+    const parameterOrder = new Map(parameterNames.map((name, order) => [name, order]));
+    const args = namedArgumentsInRange(source, sanitized, call.openParen + 1, call.closeParen, parameterOrder);
+    if (args.length < 2) {
+      continue;
+    }
+
+    const sorted = [...args].sort((left, right) => left.order - right.order);
+    if (args.every((arg, index) => arg === sorted[index])) {
+      continue;
+    }
+
+    const offending = firstOutOfOrderNamedArgument(args);
+    if (!offending) {
+      continue;
+    }
+
+    diagnostics.push({
+      data: {
+        kind: "namedArgumentOrder",
+        replacement: sortedArgumentListReplacement(source, call.openParen + 1, call.closeParen, args, sorted),
+        replacementRange: rangeForOffsets(source, call.openParen + 1, call.closeParen),
+        value: offending.name,
+      } satisfies LaravelDiagnosticData,
+      message: "Named arguments order does not match parameters order.",
+      range: rangeForOffsets(source, offending.nameStart, offending.nameEnd),
+      severity: DiagnosticSeverity.Warning,
+      source: "laravel-assist",
+    });
+  }
+
+  return diagnostics;
+}
+
+function constructorCallsInSource(sanitized: string): ConstructorCall[] {
+  const calls = new Map<number, ConstructorCall>();
+
+  for (const match of sanitized.matchAll(/\bnew\s+(\\?[A-Za-z_][A-Za-z0-9_\\]*)\s*\(/g)) {
+    if (match[1] === "class") {
+      continue;
+    }
+
+    const openParen = (match.index ?? 0) + match[0].length - 1;
+    const closeParen = matchingBracket(sanitized, openParen, "(", ")");
+    if (closeParen >= 0) {
+      calls.set(openParen, { classReference: match[1], closeParen, openParen });
+    }
+  }
+
+  for (const block of attributeBlockRanges(sanitized)) {
+    const attributeSource = sanitized.slice(block.start, block.end);
+    for (const match of attributeSource.matchAll(/\b(\\?[A-Za-z_][A-Za-z0-9_\\]*)\s*\(/g)) {
+      const openParen = block.start + (match.index ?? 0) + match[0].length - 1;
+      if (calls.has(openParen)) {
+        continue;
+      }
+
+      const closeParen = matchingBracket(sanitized, openParen, "(", ")");
+      if (closeParen >= 0 && closeParen <= block.end) {
+        calls.set(openParen, { classReference: match[1], closeParen, openParen });
+      }
+    }
+  }
+
+  return [...calls.values()].sort((left, right) => left.openParen - right.openParen);
+}
+
+function attributeBlockRanges(sanitized: string): Array<{ end: number; start: number }> {
+  const ranges: Array<{ end: number; start: number }> = [];
+  for (let index = 0; index < sanitized.length - 1; index += 1) {
+    if (sanitized[index] !== "#" || sanitized[index + 1] !== "[") {
+      continue;
+    }
+
+    const end = matchingBracket(sanitized, index + 1, "[", "]");
+    if (end >= 0) {
+      ranges.push({ end, start: index + 2 });
+      index = end;
+    }
+  }
+
+  return ranges;
+}
+
+function namedArgumentsInRange(
+  source: string,
+  sanitized: string,
+  start: number,
+  end: number,
+  parameterOrder: Map<string, number>,
+): NamedArgument[] {
+  const args: NamedArgument[] = [];
+  let segmentStart = start;
+  let depth = 0;
+
+  for (let index = start; index <= end; index += 1) {
+    const char = sanitized[index] ?? ",";
+    if (char === "(" || char === "[" || char === "{") {
+      depth += 1;
+    } else if (char === ")" || char === "]" || char === "}") {
+      depth = Math.max(0, depth - 1);
+    }
+
+    if ((char === "," && depth === 0) || index === end) {
+      const arg = namedArgumentFromSegment(source, segmentStart, index, parameterOrder);
+      if (arg) {
+        args.push(arg);
+      }
+      segmentStart = index + 1;
+    }
+  }
+
+  return args;
+}
+
+function namedArgumentFromSegment(
+  source: string,
+  start: number,
+  end: number,
+  parameterOrder: Map<string, number>,
+): NamedArgument | null {
+  const segment = source.slice(start, end);
+  const match = /^(\s*)([A-Za-z_][A-Za-z0-9_]*)\s*:/.exec(segment);
+  if (!match) {
+    return null;
+  }
+
+  const name = match[2];
+  const order = parameterOrder.get(name);
+  if (order === undefined) {
+    return null;
+  }
+
+  const nameStart = start + match[1].length;
+  return {
+    chunkEnd: end,
+    chunkStart: start,
+    name,
+    nameEnd: nameStart + name.length,
+    nameStart,
+    order,
+    text: segment,
+  };
+}
+
+function firstOutOfOrderNamedArgument(args: NamedArgument[]): NamedArgument | null {
+  for (let index = 0; index < args.length; index += 1) {
+    const laterMinimumOrder = Math.min(...args.slice(index + 1).map((arg) => arg.order));
+    if (Number.isFinite(laterMinimumOrder) && args[index].order > laterMinimumOrder) {
+      return args[index];
+    }
+  }
+
+  return args[0] ?? null;
+}
+
+function sortedArgumentListReplacement(
+  source: string,
+  start: number,
+  end: number,
+  args: NamedArgument[],
+  sorted: NamedArgument[],
+): string {
+  const original = source.slice(start, end);
+  if (!original.includes("\n")) {
+    return sorted.map((arg) => arg.text.trim().replace(/,\s*$/, "")).join(", ");
+  }
+
+  const firstArgWhitespace = /^\s*/.exec(args[0]?.text ?? "")?.[0] ?? "";
+  const firstArgIndent = firstArgWhitespace.split(/\r?\n/).at(-1) ?? firstArgWhitespace;
+  const closingIndent = /\n([ \t]*)$/.exec(original)?.[1] ?? "";
+  const sortedLines = sorted.map((arg) => `${firstArgIndent}${arg.text.trim().replace(/,\s*$/, "")},`);
+  return `\n${sortedLines.join("\n")}\n${closingIndent}`;
+}
+
+function constructorParameterNames(
+  fqcn: string,
+  index: LaravelIndex,
+  workspaceRoot: string | null,
+  visited: Set<string>,
+): string[] | null {
+  if (visited.has(fqcn)) {
+    return null;
+  }
+  visited.add(fqcn);
+
+  const sourceFile = sourceFileForClass(fqcn, index, workspaceRoot);
+  if (!sourceFile) {
+    return null;
+  }
+
+  const classInfo = phpClassLikeInfosForFile(sourceFile).find((candidate) => candidate.fqcn === fqcn);
+  if (!classInfo) {
+    return null;
+  }
+
+  const ownConstructor = classInfo.methods.get("__construct");
+  if (ownConstructor) {
+    return ownConstructor;
+  }
+
+  for (const traitName of classInfo.traits) {
+    const traitConstructor = constructorParameterNames(traitName, index, workspaceRoot, visited);
+    if (traitConstructor) {
+      return traitConstructor;
+    }
+  }
+
+  return classInfo.extendsName ? constructorParameterNames(classInfo.extendsName, index, workspaceRoot, visited) : null;
+}
+
+function sourceFileForClass(fqcn: string, index: LaravelIndex, workspaceRoot: string | null): string | null {
+  const indexed = index.phpClasses.find((phpClass) => phpClass.fqcn === fqcn)?.filePath;
+  if (indexed && existsSync(indexed)) {
+    return indexed;
+  }
+
+  if (!workspaceRoot) {
+    return null;
+  }
+
+  return composerAutoloadFileForClass(workspaceRoot, fqcn);
+}
+
+function composerAutoloadFileForClass(workspaceRoot: string, fqcn: string): string | null {
+  const autoload = composerAutoloadInfo(workspaceRoot);
+  const classMapPath = autoload.classMap.get(fqcn);
+  if (classMapPath && existsSync(classMapPath)) {
+    return classMapPath;
+  }
+
+  for (const entry of autoload.prefixes) {
+    if (!fqcn.startsWith(entry.prefix)) {
+      continue;
+    }
+
+    const relativeClassPath = `${fqcn.slice(entry.prefix.length).replace(/\\/g, path.sep)}.php`;
+    for (const basePath of entry.paths) {
+      const candidate = path.join(basePath, relativeClassPath);
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+    }
+  }
+
+  return null;
+}
+
+function composerAutoloadInfo(workspaceRoot: string): ComposerAutoloadInfo {
+  const cached = composerAutoloadCache.get(workspaceRoot);
+  if (cached) {
+    return cached;
+  }
+
+  const info: ComposerAutoloadInfo = { classMap: new Map(), prefixes: [] };
+  const vendorDir = path.join(workspaceRoot, "vendor");
+  const baseDir = workspaceRoot;
+  const resolveComposerPath = (baseName: string, suffix: string): string => {
+    const base = baseName === "vendorDir" ? vendorDir : baseDir;
+    return path.normalize(path.join(base, suffix));
+  };
+
+  const psr4Path = path.join(vendorDir, "composer", "autoload_psr4.php");
+  if (existsSync(psr4Path)) {
+    const source = readFileSync(psr4Path, "utf8");
+    for (const match of source.matchAll(/'((?:\\\\|[^'])*)'\s*=>\s*array\s*\(([\s\S]*?)\),/g)) {
+      const prefix = phpSingleQuotedStringValue(match[1]);
+      const paths = [...match[2].matchAll(/\$(vendorDir|baseDir)\s*\.\s*'([^']+)'/g)].map((pathMatch) =>
+        resolveComposerPath(pathMatch[1], phpSingleQuotedStringValue(pathMatch[2])),
+      );
+      if (paths.length > 0) {
+        info.prefixes.push({ paths, prefix });
+      }
+    }
+  }
+
+  const classMapPath = path.join(vendorDir, "composer", "autoload_classmap.php");
+  if (existsSync(classMapPath)) {
+    const source = readFileSync(classMapPath, "utf8");
+    for (const match of source.matchAll(/'((?:\\\\|[^'])*)'\s*=>\s*\$(vendorDir|baseDir)\s*\.\s*'([^']+)'/g)) {
+      info.classMap.set(
+        phpSingleQuotedStringValue(match[1]),
+        resolveComposerPath(match[2], phpSingleQuotedStringValue(match[3])),
+      );
+    }
+  }
+
+  info.prefixes.sort((left, right) => right.prefix.length - left.prefix.length);
+  composerAutoloadCache.set(workspaceRoot, info);
+  return info;
+}
+
+function phpSingleQuotedStringValue(value: string): string {
+  return value.replace(/\\\\/g, "\\").replace(/\\'/g, "'");
+}
+
+function phpClassLikeInfosForFile(filePath: string): PhpClassLikeInfo[] {
+  const cached = phpClassLikeCache.get(filePath);
+  if (cached) {
+    return cached;
+  }
+
+  const source = readFileSync(filePath, "utf8");
+  const sanitized = maskPhpStringsAndComments(source);
+  const namespace = /\bnamespace\s+([^;{\s]+)/.exec(sanitized)?.[1] ?? null;
+  const infos: PhpClassLikeInfo[] = [];
+  const declarationPattern =
+    /\b(?:(?:abstract|final|readonly)\s+)*(class|interface|trait|enum)\s+([A-Za-z_][A-Za-z0-9_]*)\b([^{;]*)/g;
+
+  for (const match of sanitized.matchAll(declarationPattern)) {
+    const kind = match[1];
+    const name = match[2];
+    if (name === "extends" || name === "implements") {
+      continue;
+    }
+
+    const fqcn = namespace ? `${namespace}\\${name}` : name;
+    const openBrace = sanitized.indexOf("{", (match.index ?? 0) + match[0].length);
+    const closeBrace = openBrace >= 0 ? matchingBracket(sanitized, openBrace, "{", "}") : -1;
+    const bodyStart = openBrace >= 0 ? openBrace + 1 : (match.index ?? 0) + match[0].length;
+    const bodyEnd = closeBrace >= 0 ? closeBrace : source.length;
+    const body = source.slice(bodyStart, bodyEnd);
+    const bodySanitized = sanitized.slice(bodyStart, bodyEnd);
+    const header = source.slice(0, match.index ?? 0);
+
+    infos.push({
+      extendsName: kind === "trait" ? null : classExtendsName(header, match[3] ?? ""),
+      fqcn,
+      methods: methodsInClassBody(body, bodySanitized),
+      traits: kind === "trait" ? [] : traitsInClassBody(header, bodySanitized),
+    });
+  }
+
+  phpClassLikeCache.set(filePath, infos);
+  return infos;
+}
+
+function classExtendsName(source: string, clause: string): string | null {
+  const match = /\bextends\s+(\\?[A-Za-z_][A-Za-z0-9_\\]*)/.exec(clause);
+  return match ? resolvePhpClassReference(source, match[1]) : null;
+}
+
+function traitsInClassBody(source: string, bodySanitized: string): string[] {
+  const traits = new Set<string>();
+  for (const match of bodySanitized.matchAll(/(?:^|[;{}\n])\s*use\s+([A-Za-z_\\][A-Za-z0-9_\\]*(?:\s*,\s*[A-Za-z_\\][A-Za-z0-9_\\]*)*)\s*(?:;|\{)/g)) {
+    for (const name of match[1].split(",")) {
+      traits.add(resolvePhpClassReference(source, name.trim()));
+    }
+  }
+
+  return [...traits];
+}
+
+function methodsInClassBody(body: string, bodySanitized: string): Map<string, string[]> {
+  const methods = new Map<string, string[]>();
+  for (const match of bodySanitized.matchAll(/\bfunction\s+&?([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)) {
+    const openParen = (match.index ?? 0) + match[0].length - 1;
+    const closeParen = matchingBracket(bodySanitized, openParen, "(", ")");
+    if (closeParen < 0) {
+      continue;
+    }
+
+    methods.set(match[1], parameterNamesFromSignature(body.slice(openParen + 1, closeParen)));
+  }
+
+  return methods;
+}
+
+function parameterNamesFromSignature(signature: string): string[] {
+  return splitTopLevelCommaRanges(maskPhpStringsAndComments(signature), 0, signature.length)
+    .map(([start, end]) => /\$([A-Za-z_][A-Za-z0-9_]*)/.exec(signature.slice(start, end))?.[1])
+    .filter((name): name is string => Boolean(name));
+}
+
+function splitTopLevelCommaRanges(sanitized: string, start: number, end: number): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  let segmentStart = start;
+  let depth = 0;
+
+  for (let index = start; index <= end; index += 1) {
+    const char = sanitized[index] ?? ",";
+    if (char === "(" || char === "[" || char === "{") {
+      depth += 1;
+    } else if (char === ")" || char === "]" || char === "}") {
+      depth = Math.max(0, depth - 1);
+    }
+
+    if ((char === "," && depth === 0) || index === end) {
+      ranges.push([segmentStart, index]);
+      segmentStart = index + 1;
+    }
+  }
+
+  return ranges;
+}
+
+function maskPhpStringsAndComments(source: string): string {
+  let result = "";
+  let index = 0;
+
+  while (index < source.length) {
+    const char = source[index];
+    const next = source[index + 1];
+
+    if (char === "'" || char === "\"") {
+      const quote = char;
+      result += " ";
+      index += 1;
+      while (index < source.length) {
+        const current = source[index];
+        result += current === "\n" ? "\n" : " ";
+        index += 1;
+        if (current === quote && source[index - 2] !== "\\") {
+          break;
+        }
+      }
+      continue;
+    }
+
+    if (char === "/" && next === "/") {
+      result += "  ";
+      index += 2;
+      while (index < source.length && source[index] !== "\n") {
+        result += " ";
+        index += 1;
+      }
+      continue;
+    }
+
+    if (char === "#") {
+      if (next === "[") {
+        result += char;
+        index += 1;
+        continue;
+      }
+
+      result += " ";
+      index += 1;
+      while (index < source.length && source[index] !== "\n") {
+        result += " ";
+        index += 1;
+      }
+      continue;
+    }
+
+    if (char === "/" && next === "*") {
+      result += "  ";
+      index += 2;
+      while (index < source.length) {
+        const current = source[index];
+        const following = source[index + 1];
+        result += current === "\n" ? "\n" : " ";
+        index += 1;
+        if (current === "*" && following === "/") {
+          result += " ";
+          index += 1;
+          break;
+        }
+      }
+      continue;
+    }
+
+    result += char;
+    index += 1;
+  }
+
+  return result;
+}
+
+function matchingBracket(source: string, openIndex: number, open: string, close: string): number {
+  let depth = 0;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === open) {
+      depth += 1;
+    } else if (char === close) {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+
+  return -1;
+}
+
+function rangeForOffsets(source: string, start: number, end: number): {
+  end: { character: number; line: number };
+  start: { character: number; line: number };
+} {
+  return {
+    end: sourcePositionForOffset(source, end),
+    start: sourcePositionForOffset(source, start),
+  };
+}
+
+function sourcePositionForOffset(source: string, offset: number): { character: number; line: number } {
+  const prefix = source.slice(0, offset);
+  const lines = prefix.split(/\r?\n/);
+  return {
+    character: lines.at(-1)?.length ?? 0,
+    line: lines.length - 1,
   };
 }
 

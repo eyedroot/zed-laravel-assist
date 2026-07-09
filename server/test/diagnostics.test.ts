@@ -1,7 +1,11 @@
 import { TextDocument } from "vscode-languageserver-textdocument";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { diagnosticsForDocument } from "../src/diagnostics.js";
-import { emptyIndex, LaravelIndex } from "../src/projectIndex.js";
+import { emptyIndex, extractPhpClasses, LaravelIndex } from "../src/projectIndex.js";
 
 describe("Laravel diagnostics", () => {
   it("reports unresolved Laravel string references", () => {
@@ -151,6 +155,127 @@ describe("Laravel diagnostics", () => {
     expect(diagnosticsForDocument(document, indexFixture)).toEqual([]);
   });
 
+  it("reports constructor named arguments that do not follow parameter order", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "laravel-assist-"));
+    const attributePath = path.join(root, "app", "Attributes", "Endpoint.php");
+    const attributeSource = [
+      "<?php",
+      "namespace App\\Attributes;",
+      "class Endpoint",
+      "{",
+      "    public function __construct(public ?string $path = null, public ?string $description = null, public ?string $summary = null, public array $tags = []) {}",
+      "}",
+    ].join("\n");
+    await mkdir(path.dirname(attributePath), { recursive: true });
+    await writeFile(attributePath, attributeSource);
+
+    const document = TextDocument.create(
+      pathToFileURL(path.join(root, "app", "Http", "Controllers", "UserController.php")).toString(),
+      "php",
+      1,
+      [
+        "<?php",
+        "use App\\Attributes\\Endpoint;",
+        "",
+        "#[Endpoint(",
+        "    path: '/users',",
+        "    summary: 'Users',",
+        "    description: 'List users',",
+        "    tags: [],",
+        ")]",
+        "class UserController {}",
+      ].join("\n"),
+    );
+
+    expect(
+      diagnosticsForDocument(
+        document,
+        { ...emptyIndex(), phpClasses: extractPhpClasses(attributePath, attributeSource) },
+        root,
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          kind: "namedArgumentOrder",
+          replacement: "\n    path: '/users',\n    description: 'List users',\n    summary: 'Users',\n    tags: [],\n",
+          value: "summary",
+        }),
+        message: "Named arguments order does not match parameters order.",
+        range: { end: { character: 11, line: 5 }, start: { character: 4, line: 5 } },
+      }),
+    ]);
+  });
+
+  it("resolves vendor attribute constructors through Composer PSR-4 and traits", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "laravel-assist-"));
+    const composerPath = path.join(root, "vendor", "composer", "autoload_psr4.php");
+    const packageRoot = path.join(root, "vendor", "vendor", "pkg", "src");
+    const postPath = path.join(packageRoot, "Attributes", "Post.php");
+    const traitPath = path.join(packageRoot, "OperationTrait.php");
+
+    await mkdir(path.dirname(composerPath), { recursive: true });
+    await mkdir(path.dirname(postPath), { recursive: true });
+    await writeFile(
+      composerPath,
+      [
+        "<?php",
+        "$vendorDir = dirname(__DIR__);",
+        "$baseDir = dirname($vendorDir);",
+        "return array(",
+        "    'Vendor\\\\Pkg\\\\' => array($vendorDir . '/vendor/pkg/src'),",
+        ");",
+      ].join("\n"),
+    );
+    await writeFile(
+      postPath,
+      [
+        "<?php",
+        "namespace Vendor\\Pkg\\Attributes;",
+        "use Vendor\\Pkg\\OperationTrait;",
+        "class Post",
+        "{",
+        "    use OperationTrait;",
+        "}",
+      ].join("\n"),
+    );
+    await writeFile(
+      traitPath,
+      [
+        "<?php",
+        "namespace Vendor\\Pkg;",
+        "trait OperationTrait",
+        "{",
+        "    public function __construct(?string $path = null, ?string $description = null, ?string $summary = null, array $tags = []) {}",
+        "}",
+      ].join("\n"),
+    );
+
+    const document = TextDocument.create(
+      pathToFileURL(path.join(root, "app", "Http", "Controllers", "UserController.php")).toString(),
+      "php",
+      1,
+      [
+        "<?php",
+        "use Vendor\\Pkg\\Attributes as OA;",
+        "",
+        "#[OA\\Post(path: '/users', summary: 'Users', description: 'List users', tags: ['self-signup'])]",
+        "class UserController {}",
+      ].join("\n"),
+    );
+
+    expect(diagnosticsForDocument(document, emptyIndex(), root)).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          kind: "namedArgumentOrder",
+          replacement: "path: '/users', description: 'List users', summary: 'Users', tags: ['self-signup']",
+          value: "summary",
+        }),
+        message: "Named arguments order does not match parameters order.",
+        range: { end: { character: 33, line: 3 }, start: { character: 26, line: 3 } },
+      }),
+    ]);
+  });
+
   it("does not report static model methods or trait scopes as unknown scopes", () => {
     const document = TextDocument.create(
       "file:///app/app/Http/Controllers/UserController.php",
@@ -174,6 +299,8 @@ describe("Laravel diagnostics", () => {
       [
         "<?php",
         "User::whereNull('email')->get();",
+        "User::whereKey($user->id)->lockForUpdate()->first();",
+        "User::whereKeyNot($user->id)->first();",
         "User::where('email', $email)",
         "    ->where('id', $id)",
         "    ->when($id, function ($query, $id) {",
