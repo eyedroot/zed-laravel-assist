@@ -293,6 +293,29 @@ describe("Laravel hovers", () => {
     }
   });
 
+  it("shows PHPUnit mock method metadata", () => {
+    const source = [
+      "<?php",
+      "$registry = $this->createMock(SelfSignupPlanRegistry::class);",
+      "$registry->method('isSelfSignupGrade')->willReturn(true);",
+    ].join("\n");
+    const document = TextDocument.create("file:///app/tests/Unit/RegistryTest.php", "php", 1, source);
+
+    expect(
+      hoverForDocument(
+        document,
+        { line: 2, character: "$registry->method('isSelf".length },
+        phpunitMockIndex,
+      ),
+    ).toEqual({
+      contents: {
+        kind: "markdown",
+        value:
+          "**PHPUnit mock method** `App\\Contracts\\SelfSignupPlanRegistry::isSelfSignupGrade`\n- Type: `interface`\n- File: `/app/app/Contracts/SelfSignupPlanRegistry.php`",
+      },
+    });
+  });
+
   it("shows Eloquent relation, scope, and attribute metadata", () => {
     const relationDocument = TextDocument.create(
       "file:///app/app/Http/Controllers/UserController.php",
@@ -1017,4 +1040,25 @@ const indexFixture: LaravelIndex = {
     },
   ],
   views: ["users.index"],
+};
+
+const phpunitMockIndex: LaravelIndex = {
+  ...emptyIndex(),
+  phpClasses: [
+    {
+      extends: [],
+      filePath: "/app/app/Contracts/SelfSignupPlanRegistry.php",
+      fqcn: "App\\Contracts\\SelfSignupPlanRegistry",
+      implements: [],
+      isAbstract: false,
+      isFinal: false,
+      kind: "interface",
+      methods: [
+        { name: "isSelfSignupGrade", range: { end: { character: 35, line: 6 }, start: { character: 20, line: 6 } } },
+      ],
+      name: "SelfSignupPlanRegistry",
+      nameRange: { end: { character: 32, line: 3 }, start: { character: 10, line: 3 } },
+      namespace: "App\\Contracts",
+    },
+  ],
 };

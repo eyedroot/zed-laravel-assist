@@ -1166,6 +1166,28 @@ describe("Laravel definitions", () => {
     ]);
   });
 
+  it("resolves PHPUnit mock method strings to the mocked method declaration", () => {
+    const source = [
+      "<?php",
+      "$registry = $this->createMock(SelfSignupPlanRegistry::class);",
+      "$registry->expects($this->once())->method('isSelfSignupGrade')->willReturn(true);",
+    ].join("\n");
+    const document = TextDocument.create("file:///app/tests/Unit/RegistryTest.php", "php", 1, source);
+
+    expect(
+      definitionsForDocument(
+        document,
+        { line: 2, character: "$registry->expects($this->once())->method('isSelf".length },
+        phpunitMockIndex,
+      ),
+    ).toEqual([
+      {
+        range: { end: { character: 35, line: 6 }, start: { character: 20, line: 6 } },
+        uri: "file:///app/app/Contracts/SelfSignupPlanRegistry.php",
+      },
+    ]);
+  });
+
   it("resolves service provider registration definitions", () => {
     const document = TextDocument.create(
       "file:///app/bootstrap/providers.php",
@@ -1718,4 +1740,25 @@ const indexFixture: LaravelIndex = {
     },
   ],
   views: ["users.index"],
+};
+
+const phpunitMockIndex: LaravelIndex = {
+  ...emptyIndex(),
+  phpClasses: [
+    {
+      extends: [],
+      filePath: "/app/app/Contracts/SelfSignupPlanRegistry.php",
+      fqcn: "App\\Contracts\\SelfSignupPlanRegistry",
+      implements: [],
+      isAbstract: false,
+      isFinal: false,
+      kind: "interface",
+      methods: [
+        { name: "isSelfSignupGrade", range: { end: { character: 35, line: 6 }, start: { character: 20, line: 6 } } },
+      ],
+      name: "SelfSignupPlanRegistry",
+      nameRange: { end: { character: 32, line: 3 }, start: { character: 10, line: 3 } },
+      namespace: "App\\Contracts",
+    },
+  ],
 };

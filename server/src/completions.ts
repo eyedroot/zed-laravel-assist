@@ -14,6 +14,7 @@ import {
   isContainerBindingStringPrefix,
   isContainerClassArgumentPrefix,
 } from "./containerResolution.js";
+import { phpunitMockMethodTargetsAtOffset } from "./phpunitMocks.js";
 
 export function completionsForDocument(
   document: TextDocument,
@@ -83,6 +84,16 @@ export function completionsForDocument(
       kind: CompletionItemKind.Interface,
       detail: containerBindingDetail(binding),
       data: { filePath: binding.filePath, concrete: binding.concrete },
+    }));
+  }
+
+  const mockMethods = phpunitMockMethodTargetsAtOffset(document.getText(), offset, index);
+  if (mockMethods.length > 0) {
+    return mockMethods.map((target) => ({
+      label: target.method.name,
+      kind: CompletionItemKind.Method,
+      detail: `PHPUnit mock method ${target.classFqcn}`,
+      data: { filePath: target.filePath, range: target.method.range },
     }));
   }
 

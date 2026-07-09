@@ -5,6 +5,7 @@ import { frameworkBuilderMethodTargetForPrefix, instanceMemberTargetForPrefix } 
 import { LaravelIndex } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
 import { isContainerBindingStringOpeningPrefix } from "./containerResolution.js";
+import { phpunitMockMethodTargetAtOffset } from "./phpunitMocks.js";
 
 export function hoverForDocument(
   document: TextDocument,
@@ -135,6 +136,15 @@ export function hoverForDocument(
       `**Factory state** \`${factoryState.model}.${factoryState.state}\``,
       `- Factory: \`${factoryState.factory.className}\``,
       `- File: \`${factoryState.factory.filePath}\``,
+    ]);
+  }
+
+  const phpunitMockMethod = phpunitMockMethodContextAtPosition(document, position, index);
+  if (phpunitMockMethod) {
+    return markdownHover([
+      `**PHPUnit mock method** \`${phpunitMockMethod.classFqcn}::${phpunitMockMethod.method.name}\``,
+      `- Type: \`${phpunitMockMethod.kind}\``,
+      `- File: \`${phpunitMockMethod.filePath}\``,
     ]);
   }
 
@@ -735,6 +745,25 @@ function stringContextAtPosition(document: TextDocument, position: Position, ind
   }
 
   return null;
+}
+
+function phpunitMockMethodContextAtPosition(
+  document: TextDocument,
+  position: Position,
+  index: LaravelIndex,
+): ReturnType<typeof phpunitMockMethodTargetAtOffset> {
+  const line = document.getText().split(/\r?\n/)[position.line] ?? "";
+  const token = quotedStringAtPosition(line, position.character);
+  if (!token) {
+    return null;
+  }
+
+  return phpunitMockMethodTargetAtOffset(
+    document.getText(),
+    document.offsetAt({ line: position.line, character: token.start }),
+    token.value,
+    index,
+  );
 }
 
 function eloquentMethodContextAtPosition(

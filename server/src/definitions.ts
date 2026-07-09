@@ -7,6 +7,7 @@ import { frameworkBuilderMethodTargetForPrefix, instanceMemberTargetForPrefix, i
 import { LaravelIndex, SourceRange } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
 import { containerResolvedMemberClass, containerResolvedPhpClasses, isContainerBindingStringOpeningPrefix } from "./containerResolution.js";
+import { phpunitMockMethodTargetAtOffset } from "./phpunitMocks.js";
 
 export function definitionsForDocument(
   document: TextDocument,
@@ -82,6 +83,16 @@ export function definitionsForDocument(
   const factoryState = factoryStateContextAtPosition(document, position, index);
   if (factoryState) {
     return [Location.create(pathToFileURL(factoryState.filePath).toString(), startRange())];
+  }
+
+  const phpunitMockMethod = phpunitMockMethodContextAtPosition(document, position, index);
+  if (phpunitMockMethod) {
+    return [
+      Location.create(pathToFileURL(phpunitMockMethod.filePath).toString(), {
+        end: phpunitMockMethod.method.range.end,
+        start: phpunitMockMethod.method.range.start,
+      }),
+    ];
   }
 
   const applicationMethod = applicationMethodContextAtPosition(document, position);
@@ -684,6 +695,25 @@ function stringContextAtPosition(
   }
 
   return null;
+}
+
+function phpunitMockMethodContextAtPosition(
+  document: TextDocument,
+  position: Position,
+  index: LaravelIndex,
+): ReturnType<typeof phpunitMockMethodTargetAtOffset> {
+  const line = document.getText().split(/\r?\n/)[position.line] ?? "";
+  const token = quotedStringAtPosition(line, position.character);
+  if (!token) {
+    return null;
+  }
+
+  return phpunitMockMethodTargetAtOffset(
+    document.getText(),
+    document.offsetAt({ line: position.line, character: token.start }),
+    token.value,
+    index,
+  );
 }
 
 function eloquentMethodContextAtPosition(

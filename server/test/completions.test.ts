@@ -668,6 +668,30 @@ describe("Laravel completions", () => {
     );
   });
 
+  it("completes PHPUnit mock method names from createMock assignments", () => {
+    const source = [
+      "<?php",
+      "$registry = $this->createMock(SelfSignupPlanRegistry::class);",
+      "$registry->method('",
+    ].join("\n");
+    const document = TextDocument.create("file:///app/tests/Unit/RegistryTest.php", "php", 1, source);
+
+    expect(
+      completionsForDocument(
+        document,
+        { line: 2, character: "$registry->method('".length },
+        phpunitMockIndex,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          detail: "PHPUnit mock method App\\Contracts\\SelfSignupPlanRegistry",
+          label: "isSelfSignupGrade",
+        }),
+      ]),
+    );
+  });
+
   it("completes Artisan command names", () => {
     const artisanDocument = TextDocument.create(
       "file:///app/app/Http/Controllers/ReportController.php",
@@ -1489,6 +1513,28 @@ const indexFixture: LaravelIndex = {
     },
   ],
   views: [],
+};
+
+const phpunitMockIndex: LaravelIndex = {
+  ...emptyIndex(),
+  phpClasses: [
+    {
+      extends: [],
+      filePath: "/app/app/Contracts/SelfSignupPlanRegistry.php",
+      fqcn: "App\\Contracts\\SelfSignupPlanRegistry",
+      implements: [],
+      isAbstract: false,
+      isFinal: false,
+      kind: "interface",
+      methods: [
+        { name: "isSelfSignupGrade", range: { end: { character: 35, line: 6 }, start: { character: 20, line: 6 } } },
+        { name: "fallbackGrade", range: { end: { character: 33, line: 7 }, start: { character: 20, line: 7 } } },
+      ],
+      name: "SelfSignupPlanRegistry",
+      nameRange: { end: { character: 32, line: 3 }, start: { character: 10, line: 3 } },
+      namespace: "App\\Contracts",
+    },
+  ],
 };
 
 // Cursor at the end of `content`; positions are expressed relative to it so
