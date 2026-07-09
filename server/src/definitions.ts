@@ -14,6 +14,11 @@ export function definitionsForDocument(
   position: Position,
   index: LaravelIndex,
 ): Location[] {
+  const includePath = includePathContextAtPosition(document, position);
+  if (includePath) {
+    return [Location.create(pathToFileURL(includePath.filePath).toString(), startRange())];
+  }
+
   const componentProp = componentPropContextAtPosition(document, position);
   if (componentProp) {
     return index.bladeComponents
@@ -640,6 +645,35 @@ function containerConcreteClassContextAtPosition(
   }
 
   return indexedClassTarget(binding.concrete, index);
+}
+
+function includePathContextAtPosition(
+  document: TextDocument,
+  position: Position,
+): { filePath: string } | null {
+  const documentPath = documentPathFromUri(document.uri);
+  if (!documentPath) {
+    return null;
+  }
+
+  const line = document.getText().split(/\r?\n/)[position.line] ?? "";
+  for (const stringRange of quotedStringRanges(line)) {
+    if (position.character < stringRange.start || position.character > stringRange.end) {
+      continue;
+    }
+
+    const expression = phpIncludeExpressionForString(line, stringRange.start - 1);
+    if (!expression) {
+      continue;
+    }
+
+    const filePath = resolveStaticPhpPathExpression(expression, documentPath);
+    if (filePath && existsSync(filePath)) {
+      return { filePath };
+    }
+  }
+
+  return null;
 }
 
 function stringContextAtPosition(
@@ -1426,6 +1460,119 @@ function projectRootForDocumentPath(filePath: string): string | null {
   }
 
   return null;
+}
+
+function phpIncludeExpressionForString(line: string, quoteStart: number): string | null {
+  const prefix = line.slice(0, quoteStart);
+  const includePattern = /(?<!@)\b(?:require_once|require|include_once|include)\b/g;
+  let includeMatch: RegExpExecArray | null = null;
+  for (const match of prefix.matchAll(includePattern)) {
+    includeMatch = match;
+  }
+
+  if (!includeMatch || includeMatch.index === undefined) {
+    return null;
+  }
+
+  const expressionStart = includeMatch.index + includeMatch[0].length;
+  if (/[;\n]/.test(prefix.slice(expressionStart))) {
+    return null;
+  }
+
+  const expressionEnd = line.indexOf(";", quoteStart);
+  return line.slice(expressionStart, expressionEnd >= 0 ? expressionEnd : line.length).trim();
+}
+
+function resolveStaticPhpPathExpression(expression: string, documentPath: string): string | null {
+  const documentDir = path.dirname(documentPath);
+  const parts: string[] = [];
+  let index = 0;
+
+  while (index < expression.length) {
+    const char = expression[index];
+    if (/\s/.test(char) || char === "." || char === "(" || char === ")") {
+      index += 1;
+      continue;
+    }
+
+    const stringToken = phpQuotedStringAt(expression, index);
+    if (stringToken) {
+      parts.push(stringToken.value);
+      index = stringToken.end;
+      continue;
+    }
+
+    if (expression.startsWith("__DIR__", index)) {
+      parts.push(documentDir);
+      index += "__DIR__".length;
+      continue;
+    }
+
+    const dirnameCall = dirnameCallAt(expression, index, documentPath);
+    if (dirnameCall) {
+      parts.push(dirnameCall.value);
+      index = dirnameCall.end;
+      continue;
+    }
+
+    return null;
+  }
+
+  if (parts.length === 0) {
+    return null;
+  }
+
+  const combined = parts.join("");
+  return path.normalize(path.isAbsolute(combined) ? combined : path.join(documentDir, combined));
+}
+
+function phpQuotedStringAt(source: string, start: number): { end: number; value: string } | null {
+  const quote = source[start];
+  if (quote !== "'" && quote !== '"') {
+    return null;
+  }
+
+  let value = "";
+  let index = start + 1;
+  while (index < source.length) {
+    const char = source[index];
+    if (char === "\\") {
+      const next = source[index + 1];
+      if (next === quote || next === "\\") {
+        value += next;
+        index += 2;
+        continue;
+      }
+    }
+
+    if (char === quote) {
+      return { end: index + 1, value };
+    }
+
+    value += char;
+    index += 1;
+  }
+
+  return null;
+}
+
+function dirnameCallAt(
+  source: string,
+  start: number,
+  documentPath: string,
+): { end: number; value: string } | null {
+  const match = /^dirname\s*\(\s*(__DIR__|__FILE__)\s*(?:,\s*([1-9][0-9]*)\s*)?\)/.exec(source.slice(start));
+  if (!match) {
+    return null;
+  }
+
+  let value = match[1] === "__FILE__" ? documentPath : path.dirname(documentPath);
+  const levels = Number(match[2] ?? "1");
+  for (let level = 0; level < levels; level += 1) {
+    value = path.dirname(value);
+  }
+
+  return { end: start + match[0].length, value };
 }
 
 function methodRangeInFile(filePath: string, method: string): SourceRange | null {

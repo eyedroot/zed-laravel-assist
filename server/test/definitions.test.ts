@@ -1,3 +1,7 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { describe, expect, it } from "vitest";
 import { definitionsForDocument } from "../src/definitions.js";
@@ -177,6 +181,84 @@ describe("Laravel definitions", () => {
         uri: "file:///app/app/View/Components/Forms/Input.php",
       },
     ]);
+  });
+
+  it("resolves static PHP include and require path definitions", async () => {
+    const rootPath = await mkdtemp(path.join(tmpdir(), "laravel-assist-definitions-"));
+    try {
+      const artisanPath = path.join(rootPath, "artisan");
+      const publicIndexPath = path.join(rootPath, "public", "index.php");
+      const bootstrapPath = path.join(rootPath, "bootstrap", "app.php");
+      const autoloadPath = path.join(rootPath, "vendor", "autoload.php");
+
+      await mkdir(path.dirname(publicIndexPath), { recursive: true });
+      await mkdir(path.dirname(bootstrapPath), { recursive: true });
+      await mkdir(path.dirname(autoloadPath), { recursive: true });
+      await writeFile(bootstrapPath, "<?php\n");
+      await writeFile(autoloadPath, "<?php\n");
+
+      const artisanLine = "$app = require_once __DIR__.'/bootstrap/app.php';";
+      const artisanDocument = TextDocument.create(
+        pathToFileURL(artisanPath).toString(),
+        "php",
+        1,
+        `<?php\n${artisanLine}`,
+      );
+      expect(definitionsForDocument(artisanDocument, { line: 1, character: artisanLine.indexOf("bootstrap") + 1 }, indexFixture)).toEqual([
+        {
+          range: {
+            end: { character: 0, line: 0 },
+            start: { character: 0, line: 0 },
+          },
+          uri: pathToFileURL(bootstrapPath).toString(),
+        },
+      ]);
+
+      const publicIndexLine = "require __DIR__.'/../vendor/autoload.php';";
+      const publicIndexDocument = TextDocument.create(
+        pathToFileURL(publicIndexPath).toString(),
+        "php",
+        1,
+        `<?php\n${publicIndexLine}`,
+      );
+      expect(definitionsForDocument(publicIndexDocument, { line: 1, character: publicIndexLine.indexOf("vendor") + 1 }, indexFixture)).toEqual([
+        {
+          range: {
+            end: { character: 0, line: 0 },
+            start: { character: 0, line: 0 },
+          },
+          uri: pathToFileURL(autoloadPath).toString(),
+        },
+      ]);
+
+      const dirnameLine = "require_once dirname(__DIR__).'/bootstrap/app.php';";
+      const dirnameDocument = TextDocument.create(
+        pathToFileURL(publicIndexPath).toString(),
+        "php",
+        1,
+        `<?php\n${dirnameLine}`,
+      );
+      expect(definitionsForDocument(dirnameDocument, { line: 1, character: dirnameLine.indexOf("bootstrap") + 1 }, indexFixture)).toEqual([
+        {
+          range: {
+            end: { character: 0, line: 0 },
+            start: { character: 0, line: 0 },
+          },
+          uri: pathToFileURL(bootstrapPath).toString(),
+        },
+      ]);
+
+      const missingLine = "include_once __DIR__.'/missing.php';";
+      const missingDocument = TextDocument.create(
+        pathToFileURL(artisanPath).toString(),
+        "php",
+        1,
+        `<?php\n${missingLine}`,
+      );
+      expect(definitionsForDocument(missingDocument, { line: 1, character: missingLine.indexOf("missing") + 1 }, indexFixture)).toEqual([]);
+    } finally {
+      await rm(rootPath, { force: true, recursive: true });
+    }
   });
 
   it("resolves broader Laravel string definitions", () => {
