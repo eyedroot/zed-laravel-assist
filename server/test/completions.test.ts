@@ -513,6 +513,161 @@ describe("Laravel completions", () => {
     );
   });
 
+  it("completes container class references and app-resolved methods", () => {
+    const serviceIndex: LaravelIndex = {
+      ...indexFixture,
+      containerBindings: [
+        ...indexFixture.containerBindings,
+        {
+          abstract: "App\\Contracts\\ServiceAccountInterface",
+          concrete: "App\\Services\\ServiceAccountLibrary",
+          filePath: "/app/app/Providers/AppServiceProvider.php",
+          lifetime: "singleton",
+        },
+      ],
+      phpClasses: [
+        {
+          extends: [],
+          filePath: "/app/app/Contracts/ServiceAccountInterface.php",
+          fqcn: "App\\Contracts\\ServiceAccountInterface",
+          implements: [],
+          isAbstract: false,
+          isFinal: false,
+          kind: "interface",
+          methods: [
+            {
+              name: "setGrade",
+              range: { end: { character: 29, line: 5 }, start: { character: 21, line: 5 } },
+            },
+          ],
+          name: "ServiceAccountInterface",
+          nameRange: { end: { character: 31, line: 3 }, start: { character: 8, line: 3 } },
+          namespace: "App\\Contracts",
+        },
+        {
+          extends: [],
+          filePath: "/app/app/Services/ServiceAccountLibrary.php",
+          fqcn: "App\\Services\\ServiceAccountLibrary",
+          implements: ["App\\Contracts\\ServiceAccountInterface"],
+          isAbstract: false,
+          isFinal: false,
+          kind: "class",
+          methods: [
+            {
+              name: "provisionWorkspace",
+              range: { end: { character: 36, line: 8 }, start: { character: 18, line: 8 } },
+            },
+          ],
+          name: "ServiceAccountLibrary",
+          nameRange: { end: { character: 27, line: 3 }, start: { character: 6, line: 3 } },
+          namespace: "App\\Services",
+        },
+      ],
+    };
+    const classDocument = TextDocument.create(
+      "file:///app/app/Services/SelfSignupService.php",
+      "php",
+      1,
+      "<?php\napp(",
+    );
+    const methodSource = [
+      "<?php",
+      "namespace App\\Services;",
+      "use App\\Contracts\\ServiceAccountInterface;",
+      "/** @var ServiceAccountInterface $serviceAccountLibrary */",
+      "$serviceAccountLibrary = app(ServiceAccountInterface::class, [$user, true]);",
+      "$serviceAccountLibrary->",
+    ].join("\n");
+    const methodDocument = TextDocument.create(
+      "file:///app/app/Services/SelfSignupService.php",
+      "php",
+      1,
+      methodSource,
+    );
+
+    expect(completionsForDocument(classDocument, { line: 1, character: 5 }, serviceIndex)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          detail: "PHP interface",
+          label: "App\\Contracts\\ServiceAccountInterface",
+        }),
+      ]),
+    );
+    expect(completionsForDocument(methodDocument, { line: 5, character: "$serviceAccountLibrary->".length }, serviceIndex)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          detail: "PHP interface App\\Contracts\\ServiceAccountInterface",
+          label: "setGrade",
+        }),
+        expect.objectContaining({
+          detail: "PHP class App\\Services\\ServiceAccountLibrary",
+          label: "provisionWorkspace",
+        }),
+      ]),
+    );
+
+    // Class-name completion must fire for every resolution entry point, not only app().
+    const classArgumentSources = [
+      "<?php\nApp::make(",
+      "<?php\nApp::makeWith(",
+      "<?php\napp()->make(",
+      "<?php\nresolve(",
+      "<?php\nContainer::getInstance()->build(",
+      "<?php\nclass Provider {\n  public function register(): void {\n    $this->app->make(",
+    ];
+    for (const source of classArgumentSources) {
+      const lines = source.split("\n");
+      const document = TextDocument.create("file:///app/app/Services/EntryPoint.php", "php", 1, source);
+      expect(
+        completionsForDocument(
+          document,
+          { line: lines.length - 1, character: lines[lines.length - 1].length },
+          serviceIndex,
+        ),
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ label: "App\\Contracts\\ServiceAccountInterface" }),
+        ]),
+      );
+    }
+
+    // Member completion for a directly chained resolution call (App facade form).
+    const chainedSource = [
+      "<?php",
+      "namespace App\\Services;",
+      "use App\\Contracts\\ServiceAccountInterface;",
+      "App::make(ServiceAccountInterface::class)->",
+    ].join("\n");
+    const chainedDocument = TextDocument.create("file:///app/app/Services/Chained.php", "php", 1, chainedSource);
+    expect(
+      completionsForDocument(
+        chainedDocument,
+        { line: 3, character: "App::make(ServiceAccountInterface::class)->".length },
+        serviceIndex,
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "setGrade" }),
+        expect.objectContaining({ label: "provisionWorkspace" }),
+      ]),
+    );
+
+    // Binding-name string completion for a facade method form.
+    const bindingStringDocument = TextDocument.create(
+      "file:///app/app/Services/Binding.php",
+      "php",
+      1,
+      "<?php\nApp::makeWith('",
+    );
+    expect(
+      completionsForDocument(bindingStringDocument, { line: 1, character: "App::makeWith('".length }, serviceIndex),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "ReportService" }),
+      ]),
+    );
+  });
+
   it("completes Artisan command names", () => {
     const artisanDocument = TextDocument.create(
       "file:///app/app/Http/Controllers/ReportController.php",
@@ -970,7 +1125,17 @@ describe("Laravel completions", () => {
       (item) => item.label,
     );
     expect(labels).toEqual(
-      expect.arrayContaining(["where", "firstOrFail", "active", "popular", "popularForTenant", "whereLike", "withTrashed"]),
+      expect.arrayContaining([
+        "where",
+        "whereKey",
+        "whereKeyNot",
+        "firstOrFail",
+        "active",
+        "popular",
+        "popularForTenant",
+        "whereLike",
+        "withTrashed",
+      ]),
     );
     expect(labels).not.toContain("headlineSlug");
   });
@@ -1324,4 +1489,185 @@ const indexFixture: LaravelIndex = {
     },
   ],
   views: [],
+};
+
+// Cursor at the end of `content`; positions are expressed relative to it so
+// multi-line fixtures read naturally.
+function endPosition(content: string): { character: number; line: number } {
+  const lines = content.split("\n");
+  return { character: lines[lines.length - 1].length, line: lines.length - 1 };
+}
+
+function labelsAt(content: string, uri = "file:///app/app/Http/Controllers/UserController.php"): string[] {
+  const document = TextDocument.create(uri, "php", 1, content);
+  return completionsForDocument(document, endPosition(content), relationIndex).map((item) => item.label);
+}
+
+describe("Eloquent relation, closure, and write-array completions", () => {
+  it("completes nested relations through a dotted `with` path", () => {
+    const labels = labelsAt("<?php\nUser::with('posts.");
+    expect(labels).toEqual(expect.arrayContaining(["comments", "author"]));
+    expect(labels).not.toContain("posts");
+    expect(labels).not.toContain("title");
+  });
+
+  it("keeps completing root relations at the first `with` segment", () => {
+    const labels = labelsAt("<?php\nUser::with('");
+    expect(labels).toEqual(expect.arrayContaining(["posts", "profile"]));
+  });
+
+  it("completes related-model columns inside an arrow-function relation closure", () => {
+    const labels = labelsAt("<?php\nUser::whereHas('posts', fn ($q) => $q->where('");
+    expect(labels).toEqual(expect.arrayContaining(["title", "body", "user_id"]));
+    expect(labels).not.toContain("team_id");
+  });
+
+  it("completes related-model columns inside a multi-line closure block", () => {
+    const labels = labelsAt(
+      "<?php\nUser::whereHas('posts', function ($q) {\n    $q->orderBy('",
+    );
+    expect(labels).toEqual(expect.arrayContaining(["title", "body"]));
+  });
+
+  it("resolves the innermost model across nested relation closures", () => {
+    const labels = labelsAt(
+      "<?php\nUser::whereHas('posts', fn ($q) => $q->whereHas('comments', fn ($c) => $c->where('",
+    );
+    expect(labels).toEqual(expect.arrayContaining(["message", "post_id"]));
+    expect(labels).not.toContain("title");
+  });
+
+  it("resolves dotted relation names for relation closure builders", () => {
+    const labels = labelsAt("<?php\nUser::whereHas('posts.comments', fn ($q) => $q->where('");
+    expect(labels).toEqual(expect.arrayContaining(["message", "post_id"]));
+    expect(labels).not.toContain("title");
+  });
+
+  it("completes related-model relations inside a relation closure", () => {
+    const labels = labelsAt("<?php\nUser::whereHas('posts', fn ($q) => $q->whereHas('");
+    expect(labels).toEqual(expect.arrayContaining(["comments", "author"]));
+  });
+
+  it("completes columns through an intermediate relation call", () => {
+    const labels = labelsAt("<?php\n$user = new User();\n$user->posts()->orderBy('");
+    expect(labels).toEqual(expect.arrayContaining(["title", "body"]));
+    expect(labels).not.toContain("team_id");
+  });
+
+  it("completes writable columns for a static create array", () => {
+    const labels = labelsAt("<?php\nUser::create(['");
+    expect(labels).toEqual(expect.arrayContaining(["name", "email", "team_id"]));
+  });
+
+  it("completes writable columns for an instance update array with prior keys", () => {
+    const labels = labelsAt(
+      "<?php\n$user = new User();\n$user->update([\n    'name' => 'x',\n    '",
+    );
+    expect(labels).toEqual(expect.arrayContaining(["email", "team_id"]));
+  });
+
+  it("does not complete columns in a write array value position", () => {
+    const labels = labelsAt("<?php\nUser::create(['email' => '");
+    expect(labels).not.toContain("team_id");
+  });
+
+  it("does not bind a closure variable that is not the closure parameter", () => {
+    const labels = labelsAt("<?php\nUser::whereHas('posts', fn ($q) => $other->where('");
+    expect(labels).not.toContain("title");
+  });
+
+  it("ignores relation closures that appear only inside comments", () => {
+    const labels = labelsAt(
+      "<?php\n// User::whereHas('posts', fn ($q) => $q->where('x'))\n$q->where('",
+    );
+    expect(labels).not.toContain("title");
+  });
+});
+
+const relationIndex: LaravelIndex = {
+  ...emptyIndex(),
+  models: [
+    {
+      className: "User",
+      filePath: "/app/app/Models/User.php",
+      fillable: ["name", "email"],
+      guarded: [],
+      namespace: "App\\Models",
+      relations: [
+        { name: "posts", relatedModel: "Post", type: "hasMany" },
+        { name: "profile", relatedModel: "Profile", type: "hasOne" },
+      ],
+      relationships: ["posts", "profile"],
+      casts: [],
+      scopes: [],
+      tableName: "users",
+    },
+    {
+      className: "Post",
+      filePath: "/app/app/Models/Post.php",
+      fillable: ["title", "body"],
+      guarded: [],
+      namespace: "App\\Models",
+      relations: [
+        { name: "comments", relatedModel: "Comment", type: "hasMany" },
+        { name: "author", relatedModel: "User", type: "belongsTo" },
+      ],
+      relationships: ["comments", "author"],
+      casts: [],
+      scopes: [],
+      tableName: "posts",
+    },
+    {
+      className: "Comment",
+      filePath: "/app/app/Models/Comment.php",
+      fillable: [],
+      guarded: [],
+      namespace: "App\\Models",
+      relations: [],
+      relationships: [],
+      casts: [],
+      scopes: [],
+      tableName: "comments",
+    },
+    {
+      className: "Profile",
+      filePath: "/app/app/Models/Profile.php",
+      fillable: [],
+      guarded: [],
+      namespace: "App\\Models",
+      relations: [],
+      relationships: [],
+      casts: [],
+      scopes: [],
+      tableName: "profiles",
+    },
+  ],
+  schemaTables: [
+    {
+      columns: [
+        { filePath: "/app/database/migrations/create_users.php", modifiers: [], name: "name", tableName: "users", type: "string" },
+        { filePath: "/app/database/migrations/create_users.php", modifiers: [], name: "email", tableName: "users", type: "string" },
+        { filePath: "/app/database/migrations/create_users.php", modifiers: [], name: "team_id", tableName: "users", type: "foreignId" },
+      ],
+      filePath: "/app/database/migrations/create_users.php",
+      name: "users",
+    },
+    {
+      columns: [
+        { filePath: "/app/database/migrations/create_posts.php", modifiers: [], name: "title", tableName: "posts", type: "string" },
+        { filePath: "/app/database/migrations/create_posts.php", modifiers: [], name: "body", tableName: "posts", type: "text" },
+        { filePath: "/app/database/migrations/create_posts.php", modifiers: [], name: "user_id", tableName: "posts", type: "foreignId" },
+      ],
+      filePath: "/app/database/migrations/create_posts.php",
+      name: "posts",
+    },
+    {
+      columns: [
+        { filePath: "/app/database/migrations/create_comments.php", modifiers: [], name: "message", tableName: "comments", type: "text" },
+        { filePath: "/app/database/migrations/create_comments.php", modifiers: [], name: "post_id", tableName: "comments", type: "foreignId" },
+      ],
+      filePath: "/app/database/migrations/create_comments.php",
+      name: "comments",
+    },
+  ],
 };

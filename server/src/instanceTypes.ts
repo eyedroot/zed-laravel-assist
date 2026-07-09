@@ -467,6 +467,252 @@ function relatedIndexedModel(
   );
 }
 
+// Walks a dotted eager-load/constraint relation path (`author.profile`) from
+// `rootModel`, returning the model the final segment resolves to. Any segment
+// that is not an indexed relation to an indexed model stops the walk so callers
+// fall back to offering nothing rather than the wrong model's relations.
+export function resolveRelationPath(
+  documentText: string,
+  rootModel: ModelInfo,
+  segments: string[],
+  index: LaravelIndex,
+): ModelInfo | null {
+  let model: ModelInfo | null = rootModel;
+  for (const segment of segments) {
+    if (!model) {
+      return null;
+    }
+    const relation = model.relations.find((candidate) => candidate.name === segment);
+    if (!relation) {
+      return null;
+    }
+    model = relatedIndexedModel(documentText, relation, index);
+  }
+  return model;
+}
+
+// Resolves the Eloquent model of a variable used as a query builder. Falls back
+// from the general variable inference (`@var`, type hints, assignments) to the
+// relation-constraint closure the variable was introduced in, so
+// `whereHas('posts', fn ($q) => $q->where(...))` knows `$q` builds `Post`.
+export function builderVariableModel(
+  documentText: string,
+  variable: string,
+  offset: number,
+  index: LaravelIndex,
+): ModelInfo | null {
+  return modelForVariable(documentText, variable, index) ?? relationClosureModel(documentText, offset, variable, index);
+}
+
+// Resolves the Eloquent model a query-builder method is called on, given the
+// receiver chain up to (and ending with) the `->`/`::` before that method.
+// Walks the chain (static entry points, typed variables, intermediate relation
+// calls) and falls back to the relation closure a bare builder variable belongs
+// to, so `$user->posts()->where(...)`, `Post::query()->orderBy(...)`, and
+// `whereHas('posts', fn ($q) => $q->where(...))` all resolve their true model.
+export function builderReceiverModel(
+  documentText: string,
+  receiverPrefix: string,
+  offset: number,
+  index: LaravelIndex,
+): ModelInfo | null {
+  const chain = chainContextForPrefix(documentText, receiverPrefix, index);
+  if (chain?.model) {
+    return chain.model;
+  }
+
+  const bareVariable = /(\$[A-Za-z_][A-Za-z0-9_]*)\s*(?:\?->|->)\s*$/.exec(receiverPrefix)?.[1];
+  return bareVariable ? relationClosureModel(documentText, offset, bareVariable, index) : null;
+}
+
+// Relation-constraint builder methods whose closure receives a query builder
+// scoped to the named relation's related model.
+const RELATION_CLOSURE_METHODS =
+  "whereHas|orWhereHas|whereDoesntHave|orWhereDoesntHave|withWhereHas|has|orHas|doesntHave|orDoesntHave";
+
+interface RelationClosureCall {
+  arrowLength: number;
+  arrowStart: number;
+  closeParen: number;
+  openParen: number;
+  paramVariable: string;
+  relationName: string;
+}
+
+function relationClosureModel(
+  documentText: string,
+  offset: number,
+  variable: string,
+  index: LaravelIndex,
+): ModelInfo | null {
+  return relationClosureModelAtDepth(documentText, offset, variable, index, 0);
+}
+
+// Nesting recurses through outer closures, so cap the depth to guard against
+// pathological input rather than trust the source to terminate.
+function relationClosureModelAtDepth(
+  documentText: string,
+  offset: number,
+  variable: string,
+  index: LaravelIndex,
+  depth: number,
+): ModelInfo | null {
+  if (depth > 16) {
+    return null;
+  }
+
+  const call = enclosingRelationClosure(documentText, offset, variable);
+  if (!call) {
+    return null;
+  }
+
+  const governing = governingModelForClosureCall(documentText, call, index, depth);
+  return governing ? resolveRelationPath(documentText, governing, call.relationName.split("."), index) : null;
+}
+
+// The model whose relation the closure constrains is the receiver chain in
+// front of the constraint call. A bare outer-closure variable recurses so
+// nested `whereHas` closures resolve their own related model.
+function governingModelForClosureCall(
+  documentText: string,
+  call: RelationClosureCall,
+  index: LaravelIndex,
+  depth: number,
+): ModelInfo | null {
+  const prefix = documentText.slice(0, call.arrowStart + call.arrowLength);
+  const chain = chainContextForPrefix(documentText, prefix, index);
+  if (chain?.model) {
+    return chain.model;
+  }
+
+  const bareVariable = /(\$[A-Za-z_][A-Za-z0-9_]*)\s*(?:\?->|->)\s*$/.exec(prefix)?.[1];
+  return bareVariable
+    ? relationClosureModelAtDepth(documentText, call.arrowStart, bareVariable, index, depth + 1)
+    : null;
+}
+
+// Finds the innermost relation-constraint closure enclosing `offset` whose
+// first parameter is `variable`. Structural scanning runs on sanitized source
+// so parens/quotes inside strings and comments cannot mislead it, while names
+// are read from the original text.
+function enclosingRelationClosure(
+  documentText: string,
+  offset: number,
+  variable: string,
+): RelationClosureCall | null {
+  const sanitized = sanitizePhpSource(documentText);
+  const pattern = new RegExp(`(->|::)\\s*(?:${RELATION_CLOSURE_METHODS})\\s*\\(`, "g");
+  let best: RelationClosureCall | null = null;
+
+  for (const match of sanitized.matchAll(pattern)) {
+    const arrowStart = match.index;
+    const openParen = arrowStart + match[0].length - 1;
+    if (openParen >= offset) {
+      continue;
+    }
+
+    // A call still being typed has no matching `)` yet; the cursor is inside it,
+    // so treat the end of the document as an implicit close.
+    const closeParen = matchingCloseParenIndex(sanitized, openParen) ?? sanitized.length;
+    if (closeParen < offset) {
+      continue;
+    }
+
+    const args = parseRelationClosureArguments(documentText, sanitized, openParen, closeParen);
+    if (!args || args.paramVariable !== variable) {
+      continue;
+    }
+
+    // Deeper nesting opens its paren later, so the largest open paren still
+    // containing the cursor is the innermost enclosing closure.
+    if (!best || openParen > best.openParen) {
+      best = {
+        arrowLength: match[1].length,
+        arrowStart,
+        closeParen,
+        openParen,
+        paramVariable: args.paramVariable,
+        relationName: args.relationName,
+      };
+    }
+  }
+
+  return best;
+}
+
+// Reads a constraint call's first (relation-name) string argument and the
+// first parameter of its closure argument. Returns null for dynamic relation
+// names or when no closure parameter is present.
+function parseRelationClosureArguments(
+  documentText: string,
+  sanitized: string,
+  openParen: number,
+  closeParen: number,
+): { paramVariable: string; relationName: string } | null {
+  let cursor = skipLeadingWhitespace(documentText, openParen + 1, closeParen);
+  const quote = documentText[cursor];
+  if (quote !== "'" && quote !== '"') {
+    return null;
+  }
+
+  cursor += 1;
+  const nameStart = cursor;
+  while (cursor < closeParen && documentText[cursor] !== quote) {
+    cursor += 1;
+  }
+  if (cursor >= closeParen) {
+    return null;
+  }
+  const relationName = documentText.slice(nameStart, cursor);
+  cursor += 1;
+
+  cursor = skipLeadingWhitespace(documentText, cursor, closeParen);
+  if (documentText[cursor] !== ",") {
+    return null;
+  }
+
+  const closureKeyword = /\b(?:fn|function)\b/.exec(sanitized.slice(cursor, closeParen));
+  if (!closureKeyword) {
+    return null;
+  }
+
+  const paramOpen = sanitized.indexOf("(", cursor + closureKeyword.index);
+  if (paramOpen < 0 || paramOpen >= closeParen) {
+    return null;
+  }
+  const paramClose = matchingCloseParenIndex(sanitized, paramOpen);
+  if (paramClose === null || paramClose > closeParen) {
+    return null;
+  }
+
+  const paramVariable = /(\$[A-Za-z_][A-Za-z0-9_]*)/.exec(documentText.slice(paramOpen + 1, paramClose))?.[1] ?? null;
+  return paramVariable ? { paramVariable, relationName } : null;
+}
+
+function skipLeadingWhitespace(text: string, start: number, limit: number): number {
+  let cursor = start;
+  while (cursor < limit && /\s/.test(text[cursor])) {
+    cursor += 1;
+  }
+  return cursor;
+}
+
+function matchingCloseParenIndex(text: string, openIndex: number): number | null {
+  let depth = 0;
+  for (let cursor = openIndex; cursor < text.length; cursor += 1) {
+    if (text[cursor] === "(") {
+      depth += 1;
+    } else if (text[cursor] === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return cursor;
+      }
+    }
+  }
+
+  return null;
+}
+
 // Scans backwards from the end of `prefix` (which ends right before the
 // member under the cursor, i.e. with `->`, `?->`, or `::`) and reconstructs
 // the receiver chain. Working on sanitized source keeps string literals,
@@ -741,6 +987,8 @@ function fallbackFrameworkMethods(className: string): Set<string> {
       "where",
       "whereDoesntHave",
       "whereHas",
+      "whereKey",
+      "whereKeyNot",
       "with",
       "withAvg",
       "withCount",

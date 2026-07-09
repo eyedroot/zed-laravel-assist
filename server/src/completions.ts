@@ -5,8 +5,15 @@ import {
 } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { fileURLToPath } from "node:url";
-import { LaravelIndex, SchemaColumnInfo, ValidationFieldInfo } from "./projectIndex.js";
+import { LaravelIndex, ModelInfo, PhpClassInfo, SchemaColumnInfo, ValidationFieldInfo } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
+import { builderReceiverModel, builderVariableModel, resolveRelationPath } from "./instanceTypes.js";
+import {
+  containerResolvedMemberClass,
+  containerResolvedPhpClasses,
+  isContainerBindingStringPrefix,
+  isContainerClassArgumentPrefix,
+} from "./containerResolution.js";
 
 export function completionsForDocument(
   document: TextDocument,
@@ -17,6 +24,7 @@ export function completionsForDocument(
     start: { line: position.line, character: 0 },
     end: position,
   });
+  const offset = document.offsetAt(position);
 
   if (isInsideModelAttributeArray(document, position)) {
     return schemaColumnsForDocument(document, index).map((column) => ({
@@ -69,7 +77,7 @@ export function completionsForDocument(
     }));
   }
 
-  if (isInsideContainerResolutionString(line)) {
+  if (isContainerBindingStringPrefix(line)) {
     return index.containerBindings.map((binding) => ({
       label: binding.abstract,
       kind: CompletionItemKind.Interface,
@@ -111,23 +119,33 @@ export function completionsForDocument(
       }));
   }
 
+  if (isContainerClassArgumentPrefix(line)) {
+    return phpClassCompletionItems(index);
+  }
+
   const propertyModel = modelPropertyContext(document, line, index);
   if (propertyModel) {
     return modelPropertyCompletions(propertyModel, index);
   }
 
-  const relationModel = eloquentRelationModel(line);
+  const resolvedPhpClass = containerResolvedMemberClass(document.getText().slice(0, offset), line, index);
+  if (resolvedPhpClass) {
+    return phpClassMethodCompletionItems(resolvedPhpClass, index);
+  }
+
+  const writeArrayModel = modelWriteArrayContext(document, position, offset, index);
+  if (writeArrayModel) {
+    return modelWritableColumnCompletions(writeArrayModel, index);
+  }
+
+  const relationModel = eloquentRelationContext(document, line, offset, index);
   if (relationModel) {
-    const relationCompletions = index.models
-      .filter((model) => model.className === relationModel || `${model.namespace}\\${model.className}` === relationModel)
-      .flatMap((model) =>
-        model.relations.map((relation) => ({
-          label: relation.name,
-          kind: CompletionItemKind.Property,
-          detail: eloquentRelationDetail(model, relation),
-          data: { filePath: model.filePath, model: model.className, relation: relation.name },
-        })),
-      );
+    const relationCompletions = relationModel.relations.map((relation) => ({
+      label: relation.name,
+      kind: CompletionItemKind.Property,
+      detail: eloquentRelationDetail(relationModel, relation),
+      data: { filePath: relationModel.filePath, model: relationModel.className, relation: relation.name },
+    }));
     if (relationCompletions.length > 0) {
       return relationCompletions;
     }
@@ -171,9 +189,9 @@ export function completionsForDocument(
     return schemaTableCompletionItems(index);
   }
 
-  const columnModel = eloquentColumnContextModel(line);
-  if (columnModel) {
-    const model = findModelByReference(document, columnModel, index);
+  const columnReceiver = eloquentColumnReceiverPrefix(line);
+  if (columnReceiver) {
+    const model = builderReceiverModel(document.getText(), columnReceiver, offset, index);
     const table = model ? index.schemaTables.find((candidate) => candidate.name === model.tableName) : null;
     if (table) {
       return table.columns.map((column) => ({
@@ -465,6 +483,53 @@ function containerBindingDetail(binding: LaravelIndex["containerBindings"][numbe
   return ["Container binding", binding.lifetime, binding.concrete].filter(Boolean).join(" ");
 }
 
+function phpClassCompletionItems(index: LaravelIndex): CompletionItem[] {
+  return index.phpClasses.map((phpClass) => ({
+    label: phpClass.fqcn,
+    kind: phpClassCompletionKind(phpClass),
+    detail: `PHP ${phpClass.kind}`,
+    data: { filePath: phpClass.filePath, kind: phpClass.kind },
+  }));
+}
+
+function phpClassMethodCompletionItems(
+  classReference: string,
+  index: LaravelIndex,
+): CompletionItem[] {
+  const items = new Map<string, CompletionItem>();
+  const classes = containerResolvedPhpClasses(classReference, index);
+
+  for (const phpClass of classes) {
+    for (const method of phpClass.methods ?? []) {
+      if (items.has(method.name)) {
+        continue;
+      }
+
+      items.set(method.name, {
+        label: method.name,
+        kind: CompletionItemKind.Method,
+        detail: `PHP ${phpClass.kind} ${phpClass.fqcn}`,
+        data: { filePath: phpClass.filePath, range: method.range },
+      });
+    }
+  }
+
+  return [...items.values()];
+}
+
+function phpClassCompletionKind(phpClass: PhpClassInfo): CompletionItemKind {
+  switch (phpClass.kind) {
+    case "interface":
+      return CompletionItemKind.Interface;
+    case "trait":
+      return CompletionItemKind.Module;
+    case "enum":
+      return CompletionItemKind.Enum;
+    case "class":
+      return CompletionItemKind.Class;
+  }
+}
+
 function facadeDetail(facade: LaravelIndex["facades"][number]): string {
   return [
     "Laravel facade",
@@ -534,8 +599,9 @@ const ELOQUENT_BUILDER_METHODS = [
   "orderByDesc", "paginate", "pluck", "select", "sharedLock", "simplePaginate",
   "skip", "sole", "sum", "take", "tap", "toSql", "unless", "update",
   "updateOrCreate", "value", "when", "where", "whereBetween", "whereDate",
-  "whereDoesntHave", "whereHas", "whereIn", "whereNot", "whereNotIn",
-  "whereNotNull", "whereNull", "with", "withCount", "withSum",
+  "whereDoesntHave", "whereHas", "whereIn", "whereKey", "whereKeyNot",
+  "whereNot", "whereNotIn", "whereNotNull", "whereNull", "with",
+  "withCount", "withSum",
 ];
 
 const SOFT_DELETE_BUILDER_METHODS = ["onlyTrashed", "restore", "withTrashed", "withoutTrashed"];
@@ -543,13 +609,16 @@ const SOFT_DELETE_BUILDER_METHODS = ["onlyTrashed", "restore", "withTrashed", "w
 const COLUMN_ARGUMENT_METHODS =
   "(?:where|orWhere|whereIn|orWhereIn|whereNotIn|whereNull|whereNotNull|whereBetween|whereDate|whereNot|firstWhere|orderBy|orderByDesc|latest|oldest|value|pluck|select|addSelect|groupBy|min|max|sum|avg)";
 
-// Column-string argument position in an Eloquent chain that names its model:
-// `User::where('<cursor>`, `User::query()->orderBy('<cursor>`, ...
-function eloquentColumnContextModel(linePrefix: string): string | null {
+// Column-string argument position in a query-builder chain. Returns the
+// receiver chain up to (and ending with) the `->`/`::` before the column
+// method, so the builder's model can be resolved for `User::where('<cursor>`,
+// `User::query()->orderBy('<cursor>`, `$user->posts()->pluck('<cursor>`, and
+// `$q->where('<cursor>` inside a relation closure alike.
+function eloquentColumnReceiverPrefix(linePrefix: string): string | null {
   const match = new RegExp(
-    `\\b([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)::[^;\\n]*?\\b${COLUMN_ARGUMENT_METHODS}\\s*\\(\\s*(?:\\[\\s*)?['"][A-Za-z0-9_]*$`,
+    `(?:->|::)\\s*${COLUMN_ARGUMENT_METHODS}\\s*\\(\\s*(?:\\[\\s*)?['"][A-Za-z0-9_]*$`,
   ).exec(linePrefix);
-  return match?.[1] ?? null;
+  return match ? linePrefix.slice(0, match.index + 2) : null;
 }
 
 // Table-name argument position in a query builder entry point:
@@ -1038,11 +1107,6 @@ function isInsideAuthorizationAbilityString(linePrefix: string): boolean {
     /@(can|cannot|canany)\s*\(\s*['"][^'"]*$/.test(linePrefix);
 }
 
-function isInsideContainerResolutionString(linePrefix: string): boolean {
-  return /\b(app|resolve)\(\s*['"][^'"]*$/.test(linePrefix) ||
-    /App::(make|bound|has)\(\s*['"][^'"]*$/.test(linePrefix);
-}
-
 function isInsideArtisanCommandString(linePrefix: string): boolean {
   return /\bArtisan::(?:call|queue)\(\s*['"][^'"]*$/.test(linePrefix) ||
     /(?:\$this|static|self)->(?:call|callSilent)\(\s*['"][^'"]*$/.test(linePrefix) ||
@@ -1162,19 +1226,130 @@ function controllerMatches(controller: LaravelIndex["controllers"][number], valu
     (controller.namespace ? `${controller.namespace}\\${controller.className}` === value : false);
 }
 
-function eloquentRelationModel(linePrefix: string): string | null {
-  const relationMethods =
-    "(with|withOnly|without|withCount|withExists|withSum|withAvg|withMin|withMax|has|doesntHave|whereHas|orWhereHas|withWhereHas|whereDoesntHave|orWhereDoesntHave|load|loadMissing|loadCount|loadSum|loadAvg|loadMin|loadMax)";
-  const directStatic = new RegExp(
-    `\\b([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)::${relationMethods}\\(\\s*(?:\\[\\s*)?['\"][^'\"]*$`,
-  ).exec(linePrefix);
-  if (directStatic) {
-    return directStatic[1];
+const RELATION_CONTEXT_METHODS =
+  "with|withOnly|without|withCount|withExists|withSum|withAvg|withMin|withMax|has|doesntHave|whereHas|orWhereHas|withWhereHas|whereDoesntHave|orWhereDoesntHave|load|loadMissing|loadCount|loadSum|loadAvg|loadMin|loadMax";
+
+// Relation-name string in an eager-load/constraint call. Supports dotted nested
+// paths (`with('author.profile.<cursor>')` completes the profile's relations)
+// and resolves the receiver chain before the relation method, so completions
+// work for `User::query()->whereHas('<cursor>')`, `$user->load('<cursor>')`,
+// and `$q->whereHas('<cursor>')` inside relation closures alike.
+function eloquentRelationContext(
+  document: TextDocument,
+  linePrefix: string,
+  offset: number,
+  index: LaravelIndex,
+): ModelInfo | null {
+  const context = eloquentRelationReceiverContext(linePrefix);
+  if (!context) {
+    return null;
   }
 
-  return new RegExp(
-    `\\b([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)::[^;\\n]*->${relationMethods}\\(\\s*(?:\\[\\s*)?['\"][^'\"]*$`,
-  ).exec(linePrefix)?.[1] ?? null;
+  const rootModel = builderReceiverModel(document.getText(), context.receiverPrefix, offset, index);
+  if (!rootModel) {
+    return null;
+  }
+
+  // The final dotted segment is the one being typed; the earlier segments form
+  // the relation path to walk from the root model.
+  const segments = context.pathPrefix.split(".");
+  segments.pop();
+  return resolveRelationPath(document.getText(), rootModel, segments, index);
+}
+
+function eloquentRelationReceiverContext(linePrefix: string): { pathPrefix: string; receiverPrefix: string } | null {
+  const match = new RegExp(
+    `(?:->|::)\\s*(?:${RELATION_CONTEXT_METHODS})\\s*\\(\\s*(?:\\[\\s*)?['"]([^'"]*)$`,
+  ).exec(linePrefix);
+  return match ? { pathPrefix: match[1], receiverPrefix: linePrefix.slice(0, match.index + 2) } : null;
+}
+
+// Eloquent write methods whose array argument is keyed by model attributes.
+const WRITE_ARRAY_METHODS =
+  "create|forceCreate|make|fill|forceFill|update|firstOrCreate|firstOrNew|updateOrCreate";
+
+// Attribute-array key position in an Eloquent write call:
+// `User::create(['<cursor>'])`, `$user->update(['name' => 'x', '<cursor>'])`.
+function modelWriteArrayContext(
+  document: TextDocument,
+  position: { line: number; character: number },
+  offset: number,
+  index: LaravelIndex,
+): ModelInfo | null {
+  const beforeCursor = document.getText({ start: { line: 0, character: 0 }, end: position });
+  if (!isArrayKeyStringOpen(beforeCursor)) {
+    return null;
+  }
+
+  const call = lastMatch(
+    new RegExp(
+      `(\\$[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_\\\\][A-Za-z0-9_\\\\]*)\\s*(?:->|::)\\s*(?:${WRITE_ARRAY_METHODS})\\s*\\(\\s*\\[`,
+      "g",
+    ),
+    beforeCursor,
+  );
+  if (!call) {
+    return null;
+  }
+
+  // Reject when the write array (or its call) already closed before the cursor.
+  const arrayBody = beforeCursor.slice(call.index + call[0].length);
+  if (bracketDelta(arrayBody) < 0 || parenDelta(arrayBody) < 0) {
+    return null;
+  }
+
+  const receiver = call[1];
+  return receiver.startsWith("$")
+    ? builderVariableModel(document.getText(), receiver, offset, index)
+    : findModelByReference(document, receiver, index);
+}
+
+// True when the cursor sits inside a string starting a new array element
+// (preceded by `[` or `,`), i.e. an array key rather than a `=>` value.
+function isArrayKeyStringOpen(beforeCursor: string): boolean {
+  const openQuote = /(['"])[^'"]*$/.exec(beforeCursor);
+  if (!openQuote) {
+    return false;
+  }
+
+  let cursor = openQuote.index - 1;
+  while (cursor >= 0 && /\s/.test(beforeCursor[cursor])) {
+    cursor -= 1;
+  }
+  const preceding = beforeCursor[cursor];
+  return preceding === "[" || preceding === ",";
+}
+
+function modelWritableColumnCompletions(model: ModelInfo, index: LaravelIndex): CompletionItem[] {
+  const items = new Map<string, CompletionItem>();
+  const table = index.schemaTables.find((candidate) => candidate.name === model.tableName);
+  const casts = new Map((model.castDetails ?? []).map((cast) => [cast.name, cast.type]));
+
+  for (const column of table?.columns ?? []) {
+    items.set(column.name, {
+      label: column.name,
+      kind: CompletionItemKind.Field,
+      detail: modelColumnDetail(column, casts.get(column.name)),
+      data: { filePath: column.filePath, tableName: column.tableName },
+    });
+  }
+
+  for (const fillable of model.fillable) {
+    if (!items.has(fillable)) {
+      items.set(fillable, {
+        label: fillable,
+        kind: CompletionItemKind.Field,
+        detail: `Fillable attribute on ${model.className}`,
+        data: { filePath: model.filePath },
+      });
+    }
+  }
+
+  return [...items.values()];
+}
+
+function bracketDelta(text: string): number {
+  return [...text].reduce((delta, char) => delta + (char === "[" ? 1 : char === "]" ? -1 : 0), 0);
 }
 
 function macroStaticCallClass(linePrefix: string): string | null {

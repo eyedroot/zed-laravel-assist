@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { frameworkBuilderMethodTargetForPrefix, instanceMemberTargetForPrefix } from "./instanceTypes.js";
 import { LaravelIndex } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
+import { isContainerBindingStringOpeningPrefix } from "./containerResolution.js";
 
 export function hoverForDocument(
   document: TextDocument,
@@ -1361,7 +1362,7 @@ function hoverKindForPrefix(prefix: string): HoverSimpleKind | null {
   ) {
     return "authorization";
   }
-  if (/\b(app|resolve)\s*\(\s*$/.test(prefix) || /App::(make|bound|has)\s*\(\s*$/.test(prefix)) {
+  if (isContainerBindingStringOpeningPrefix(prefix)) {
     return "container";
   }
   if (

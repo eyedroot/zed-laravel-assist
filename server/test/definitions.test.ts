@@ -1067,6 +1067,105 @@ describe("Laravel definitions", () => {
     ]);
   });
 
+  it("resolves members of a container-resolved instance to their declaration", () => {
+    const index: LaravelIndex = {
+      ...indexFixture,
+      containerBindings: [
+        ...indexFixture.containerBindings,
+        {
+          abstract: "App\\Contracts\\ServiceAccountInterface",
+          concrete: "App\\Services\\ServiceAccountLibrary",
+          filePath: "/app/app/Providers/AppServiceProvider.php",
+          lifetime: "singleton",
+        },
+      ],
+      phpClasses: [
+        {
+          extends: [],
+          filePath: "/app/app/Contracts/ServiceAccountInterface.php",
+          fqcn: "App\\Contracts\\ServiceAccountInterface",
+          implements: [],
+          isAbstract: false,
+          isFinal: false,
+          kind: "interface",
+          methods: [
+            { name: "setGrade", range: { end: { character: 29, line: 5 }, start: { character: 21, line: 5 } } },
+          ],
+          name: "ServiceAccountInterface",
+          nameRange: { end: { character: 31, line: 3 }, start: { character: 8, line: 3 } },
+          namespace: "App\\Contracts",
+        },
+        {
+          extends: [],
+          filePath: "/app/app/Services/ServiceAccountLibrary.php",
+          fqcn: "App\\Services\\ServiceAccountLibrary",
+          implements: ["App\\Contracts\\ServiceAccountInterface"],
+          isAbstract: false,
+          isFinal: false,
+          kind: "class",
+          methods: [
+            { name: "provisionWorkspace", range: { end: { character: 36, line: 8 }, start: { character: 18, line: 8 } } },
+          ],
+          name: "ServiceAccountLibrary",
+          nameRange: { end: { character: 27, line: 3 }, start: { character: 6, line: 3 } },
+          namespace: "App\\Services",
+        },
+      ],
+    };
+
+    // Member on a directly chained facade resolution call.
+    const chainedDocument = TextDocument.create(
+      "file:///app/app/Services/SelfSignupService.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "namespace App\\Services;",
+        "use App\\Contracts\\ServiceAccountInterface;",
+        "App::make(ServiceAccountInterface::class)->setGrade();",
+      ].join("\n"),
+    );
+    expect(
+      definitionsForDocument(
+        chainedDocument,
+        { line: 3, character: "App::make(ServiceAccountInterface::class)->set".length },
+        index,
+      ),
+    ).toEqual([
+      {
+        range: { end: { character: 29, line: 5 }, start: { character: 21, line: 5 } },
+        uri: "file:///app/app/Contracts/ServiceAccountInterface.php",
+      },
+    ]);
+
+    // Member on a variable assigned from `$this->app->make(...)`, resolving to a
+    // concrete-only method contributed by the bound implementation.
+    const variableDocument = TextDocument.create(
+      "file:///app/app/Providers/AppServiceProvider.php",
+      "php",
+      1,
+      [
+        "<?php",
+        "namespace App\\Providers;",
+        "use App\\Contracts\\ServiceAccountInterface;",
+        "$service = $this->app->make(ServiceAccountInterface::class);",
+        "$service->provisionWorkspace();",
+      ].join("\n"),
+    );
+    expect(
+      definitionsForDocument(
+        variableDocument,
+        { line: 4, character: "$service->provision".length },
+        index,
+      ),
+    ).toEqual([
+      {
+        range: { end: { character: 36, line: 8 }, start: { character: 18, line: 8 } },
+        uri: "file:///app/app/Services/ServiceAccountLibrary.php",
+      },
+    ]);
+  });
+
   it("resolves service provider registration definitions", () => {
     const document = TextDocument.create(
       "file:///app/bootstrap/providers.php",

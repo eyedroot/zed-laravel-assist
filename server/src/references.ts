@@ -4,6 +4,7 @@ import { Location, Position, Range } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { LaravelIndex } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
+import { containerBindingReferenceRegExps, isContainerBindingStringOpeningPrefix } from "./containerResolution.js";
 
 type ReferenceTarget =
   | {
@@ -541,7 +542,7 @@ function referenceKindForPrefix(prefix: string): ReferenceStringKind | null {
     return "authorization";
   }
 
-  if (/\b(app|resolve)\s*\(\s*$/.test(prefix) || /App::(make|bound|has)\s*\(\s*$/.test(prefix)) {
+  if (isContainerBindingStringOpeningPrefix(prefix)) {
     return "container";
   }
 
@@ -924,10 +925,9 @@ function containerReferencesInLine(
   lineNumber: number,
   value: string,
 ): Location[] {
-  return [
-    ...stringCallReferencesInLine(filePath, line, lineNumber, /\b(app|resolve)\s*\(\s*(['"])([^'"]+)\2/g, 3, value),
-    ...stringCallReferencesInLine(filePath, line, lineNumber, /\bApp::(make|bound|has)\s*\(\s*(['"])([^'"]+)\2/g, 3, value),
-  ];
+  return containerBindingReferenceRegExps().flatMap((pattern) =>
+    stringCallReferencesInLine(filePath, line, lineNumber, pattern, 2, value),
+  );
 }
 
 function commandReferencesInLine(

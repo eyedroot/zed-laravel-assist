@@ -267,6 +267,32 @@ describe("Laravel hovers", () => {
     });
   });
 
+  it("shows container binding metadata for every resolution entry point", () => {
+    const forms = [
+      "<?php\nApp::make('reporter')",
+      "<?php\nApp::get('reporter')",
+      "<?php\n$this->app->make('reporter')",
+      "<?php\nContainer::getInstance()->makeWith('reporter', [])",
+    ];
+    for (const source of forms) {
+      const line = source.split("\n")[1];
+      const character = line.indexOf("reporter") + 2;
+      const document = TextDocument.create(
+        "file:///app/app/Http/Controllers/ReportController.php",
+        "php",
+        1,
+        source,
+      );
+      expect(hoverForDocument(document, { line: 1, character }, indexFixture)).toEqual({
+        contents: {
+          kind: "markdown",
+          value:
+            "**Container binding** `reporter`\n- Lifetime: `singleton`\n- Concrete: `DatabaseReporter`\n- File: `/app/app/Providers/AppServiceProvider.php`",
+        },
+      });
+    }
+  });
+
   it("shows Eloquent relation, scope, and attribute metadata", () => {
     const relationDocument = TextDocument.create(
       "file:///app/app/Http/Controllers/UserController.php",

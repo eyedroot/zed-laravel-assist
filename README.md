@@ -16,11 +16,12 @@ Current scope:
 - Early completions for `route()`, `to_route()`, redirect route helpers, route parameter arrays, `view()`, Blade sections/stacks, `config()`, `env()`, controllers, models, model properties, Eloquent query columns/scopes/custom builders/builder methods, validation Rule schema tables/columns, validation rule names inside rule strings (including `exists:`/`unique:` schema parameters), `DB::table(...)` tables and chained columns, `Storage::disk(...)` filesystem disks, Inertia pages, Livewire components/tag parameters/wire bindings, service providers, facade aliases, application artifacts, and common Laravel helpers
 - Early go-to-definition support for named routes, route parameters, controller actions, Blade views/components/component props/sections/stacks, config/env keys, translations, authorization abilities, container bindings, Artisan commands, middleware aliases, service providers, Eloquent relations/scopes/custom builders, validated request fields, validation Rule schema tables/columns, `DB::table(...)` tables/columns, Inertia pages, Livewire components, and Livewire wire bindings
 - Early references support for named routes, route parameters, controller actions, Blade views/components/component props/sections/stacks, config/env keys, translations, authorization abilities, container bindings, Artisan commands, middleware aliases, service providers, Eloquent relations/scopes/custom builders, and validated request fields
+- Go-to-implementation support that lists every subclass and interface implementer of an indexed PHP class, interface, trait, or enum, resolved transitively across the inheritance graph (toggleable, on by default)
 - Early document/workspace symbols for indexed Laravel routes, controllers/actions, views, components, config/env keys, models, schema, translations, commands, middleware, bindings, authorization, service providers, factories, seeders, Eloquent custom builders, and application artifacts
 - Early hover support for named routes, route parameters, controller actions, Blade views/components/component props/sections/stacks, config/env keys, translations, authorization abilities, container bindings, Artisan commands, middleware aliases, service providers, facade aliases, application artifacts, model properties, Eloquent relations/scopes/custom builders, validated request fields, validation Rule schema tables/columns, and `DB::table(...)` tables/columns
 - Early diagnostics for unresolved route, route parameter, controller action, view, component, component prop, Blade section/stack, config, env, translation, authorization, container, command, middleware, service provider, Eloquent relation/scope, factory state, seeder, validated request field, validation Rule schema, Inertia page, and Livewire component references
 - Early quick-fix and generation code actions for unresolved route, view, component, component prop, Blade section/stack, config, env, translation, authorization, container, command, middleware, factory state, seeder, validated request field, validation Rule schema, Inertia page, and Livewire component references, missing Blade view/component creation, and model-based factory/resource/policy/seeder/FormRequest creation
-- Project indexing for routes, controllers/actions, Blade views/components, Inertia pages, Livewire components, Artisan commands, middleware aliases, service providers, config files, env keys, translations, service bindings, authorization, facades, macros, factories, seeders, Laravel application artifacts, model classes, migration schema, and validation rules
+- Project indexing for routes, controllers/actions, Blade views/components, Inertia pages, Livewire components, Artisan commands, middleware aliases, service providers, config files, env keys, translations, service bindings, authorization, facades, macros, factories, seeders, Laravel application artifacts, model classes, migration schema, validation rules, and the PHP class/interface/trait/enum inheritance graph
 - File-level memory and disk cache for incremental project indexing
 
 ## Current Parsing and Indexing
@@ -334,7 +335,11 @@ The authorization index stores:
 - model and policy class when available
 - source file path
 
-Container bindings are exposed inside `app('...')`, `resolve('...')`, and `App::make('...')`, with hovers, go-to-definition, references, diagnostics, and replacement quick fixes resolving back to indexed provider entries. Authorization abilities are exposed inside `can('...')`, `authorize('...')`, `Gate::allows('...')`, `@can('...')`, and related calls, with hovers, go-to-definition, references, diagnostics, and replacement quick fixes resolving to indexed gate or policy sources.
+Container bindings are exposed as binding-name completions inside the string argument of every container resolution entry point — the `app('...')` and `resolve('...')` helpers, plus the `make`, `makeWith`, `get`, `factory`, `bound`, and `has` methods called on the `App` facade, the `app()` helper, a service provider's `$this->app`, or `Container::getInstance()` — with hovers, go-to-definition, references, diagnostics, and replacement quick fixes resolving back to indexed provider entries.
+
+When the argument is a class or interface name (`app(Foo::class)`, `App::make(Foo::class)`, `$this->app->makeWith(Bar::class, ...)`, and the `build`/`get`/`factory` forms), the server completes indexed PHP class, interface, trait, and enum names. Chaining off a resolution call, or off a variable it was assigned to (`App::make(Foo::class)->`, or `$service->` after `$service = app(Foo::class)` or a matching `@var` docblock), completes and navigates the members of the resolved type and its bound concrete. Constructor interface type hints continue to resolve to the bound concrete class. The full set of entry points lives in one place (`server/src/containerResolution.ts`) so completion, type inference, definition, hover, and references stay in sync. The `resolve()` container method is intentionally excluded because it is protected, and `call`/`wrap`/`tagged`/`bind`/`singleton` are excluded because their first argument is not a resolvable class name.
+
+Authorization abilities are exposed inside `can('...')`, `authorize('...')`, `Gate::allows('...')`, `@can('...')`, and related calls, with hovers, go-to-definition, references, diagnostics, and replacement quick fixes resolving to indexed gate or policy sources.
 
 ### Service Provider Discovery
 
@@ -506,6 +511,34 @@ The artifact index stores:
 
 Artifacts are exposed in class-like completion contexts. Event completions are also exposed in `event(new ...)`, events and jobs in static `::dispatch(...)` contexts, and mailables/notifications in `send(new ...)`, `queue(new ...)`, and `later(new ...)` contexts. Known artifact class references in those contexts expose hovers, go-to-definition, and references back to indexed artifact files, with constructor signatures shown in completion detail and hover when available.
 
+### Class Implementation Navigation
+
+The server indexes every declared `class`, `interface`, `trait`, and `enum` under `app/` and any `modules/` roots, together with the fully-qualified names each one extends and implements.
+
+Files scanned:
+
+- `app/**/*.php`
+- `<modules>/**/*.php`
+
+Patterns currently extracted:
+
+- class, interface, trait, and enum declarations, including `abstract`, `final`, and `readonly` modifiers
+- resolved `extends` parents (one for a class or enum, several for an interface)
+- resolved `implements` interfaces, including enum backing types such as `enum Status: string implements HasColor`
+- multi-line `extends` and `implements` clauses
+
+The class index stores:
+
+- fully-qualified name
+- short name and namespace
+- declaration kind and modifiers
+- resolved extends and implements targets
+- the source range of the type name for navigation
+
+This backs the LSP implementation provider (`textDocument/implementation`). Invoking "Go to Implementation" (bound to `shift-f12` by default in Zed) on an abstract class, interface, or any reference to one — its declaration, an `extends`/`implements` clause, a `use` import, or a `Foo::class` reference — lists every type that extends or implements it, transitively. This mirrors the subclass and implementer navigation offered by dedicated PHP IDEs and works without an Intelephense premium license.
+
+The feature is enabled by default and can be turned off; see [Zed Settings](#zed-settings).
+
 ### Helper Completions
 
 When the cursor is not inside one of the indexed string contexts, the server currently offers snippets for common Laravel helpers:
@@ -599,6 +632,24 @@ After installing the extension locally in Zed, enable the language server for PH
 Route URL inlay hints for `router.php` files are controlled by Zed's type inlay hint setting. If route URL hints do not appear next to `Route::get(...)`, `Route::post(...)`, or similar calls, make sure `show_type_hints` is set to `true`.
 
 Blade support will depend on the active Zed language name exposed by the Blade extension installed in the editor.
+
+### Turning Off Go to Implementation
+
+[Class implementation navigation](#class-implementation-navigation) is on by default. If a licensed PHP language server already provides "Go to Implementation" and you would rather that server own it, turn the Laravel Assist provider off through the language server's initialization options:
+
+```json
+{
+  "lsp": {
+    "laravel-assist": {
+      "initialization_options": {
+        "implementations": { "enabled": false }
+      }
+    }
+  }
+}
+```
+
+Zed forwards `initialization_options` to the language server only when it starts, so restart the language server (or Zed) after changing this. With the provider off, Laravel Assist no longer advertises the implementation capability and Zed falls back to any other PHP language server for `shift-f12`.
 
 ## Roadmap
 

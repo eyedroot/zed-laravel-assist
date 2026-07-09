@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { frameworkBuilderMethodTargetForPrefix, instanceMemberTargetForPrefix, instanceModelForPrefix } from "./instanceTypes.js";
 import { LaravelIndex, SourceRange } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
+import { containerResolvedMemberClass, containerResolvedPhpClasses, isContainerBindingStringOpeningPrefix } from "./containerResolution.js";
 
 export function definitionsForDocument(
   document: TextDocument,
@@ -89,6 +90,16 @@ export function definitionsForDocument(
       Location.create(
         pathToFileURL(applicationMethod.filePath).toString(),
         applicationMethod.range ? { end: applicationMethod.range.end, start: applicationMethod.range.start } : startRange(),
+      ),
+    ];
+  }
+
+  const containerMember = containerResolvedMemberContextAtPosition(document, position, index);
+  if (containerMember) {
+    return [
+      Location.create(
+        pathToFileURL(containerMember.filePath).toString(),
+        containerMember.range ? { end: containerMember.range.end, start: containerMember.range.start } : startRange(),
       ),
     ];
   }
@@ -754,6 +765,41 @@ function applicationMethodContextAtPosition(
   }
 
   return knownApplicationMethods().has(token.value) ? { filePath } : null;
+}
+
+// Resolves `App::make(Foo::class)->method` / `app(Bar::class)->method`, and
+// container-resolved variables (`$service->method` after `$service = app(...)`
+// or a matching `@var` docblock), to the member's declaration in the resolved
+// class or its bound concrete.
+function containerResolvedMemberContextAtPosition(
+  document: TextDocument,
+  position: Position,
+  index: LaravelIndex,
+): { filePath: string; range?: SourceRange } | null {
+  const line = document.getText().split(/\r?\n/)[position.line] ?? "";
+  const token = tokenAtPosition(line, position.character);
+  if (!token) {
+    return null;
+  }
+
+  const linePrefix = line.slice(0, token.start + token.value.length);
+  const documentPrefix = document.getText().slice(
+    0,
+    document.offsetAt({ line: position.line, character: token.start }),
+  );
+  const classReference = containerResolvedMemberClass(documentPrefix, linePrefix, index);
+  if (!classReference) {
+    return null;
+  }
+
+  for (const phpClass of containerResolvedPhpClasses(classReference, index)) {
+    const method = phpClass.methods?.find((candidate) => candidate.name === token.value);
+    if (method) {
+      return { filePath: phpClass.filePath, range: method.range };
+    }
+  }
+
+  return null;
 }
 
 // Resolves `$user->roles()` style member access when the receiver can be
@@ -1430,7 +1476,7 @@ function definitionKindForPrefix(prefix: string): DefinitionSimpleKind | null {
     return "authorization";
   }
 
-  if (/\b(app|resolve)\s*\(\s*$/.test(prefix) || /App::(make|bound|has)\s*\(\s*$/.test(prefix)) {
+  if (isContainerBindingStringOpeningPrefix(prefix)) {
     return "container";
   }
 

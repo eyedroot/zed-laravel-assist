@@ -433,6 +433,33 @@ describe("Laravel references", () => {
     ]);
   });
 
+  it("finds container binding references for facade and app-instance forms", async () => {
+    const document = TextDocument.create(
+      pathToFileURL(controllerPath).toString(),
+      "php",
+      1,
+      [
+        "<?php",
+        "App::make('reporter');",
+        "$this->app->makeWith('reporter', []);",
+      ].join("\n"),
+    );
+
+    const references = await referencesForDocument(document, { line: 1, character: "App::make('re".length }, indexFixture());
+    expect(references).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          range: { end: { character: 19, line: 1 }, start: { character: 11, line: 1 } },
+          uri: pathToFileURL(controllerPath).toString(),
+        }),
+        expect.objectContaining({
+          range: { end: { character: 30, line: 2 }, start: { character: 22, line: 2 } },
+          uri: pathToFileURL(controllerPath).toString(),
+        }),
+      ]),
+    );
+  });
+
   it("finds Eloquent relation, scope, and attribute references", async () => {
     const controllerDocument = TextDocument.create(
       pathToFileURL(controllerPath).toString(),
