@@ -838,6 +838,25 @@ describe("project index extraction", () => {
     ]);
   });
 
+  it("resolves qualified class names relative to the current namespace", () => {
+    const source = `
+      namespace App\\Kollus\\Libraries\\ServiceAccount;
+
+      new Works\\Register\\SetSelfSignupTranscoder;
+      new namespace\\Works\\Register\\SetSelfSignupTranscoder();
+    `;
+
+    expect(resolvePhpClassReference(source, "Works\\Register\\SetSelfSignupTranscoder")).toBe(
+      "App\\Kollus\\Libraries\\ServiceAccount\\Works\\Register\\SetSelfSignupTranscoder",
+    );
+    expect(resolvePhpClassReference(source, "namespace\\Works\\Register\\SetSelfSignupTranscoder")).toBe(
+      "App\\Kollus\\Libraries\\ServiceAccount\\Works\\Register\\SetSelfSignupTranscoder",
+    );
+    expect(resolvePhpClassReference(source, "\\Works\\Register\\SetSelfSignupTranscoder")).toBe(
+      "Works\\Register\\SetSelfSignupTranscoder",
+    );
+  });
+
   it("indexes service container bindings from nested service provider directories", async () => {
     const rootPath = await mkdtemp(path.join(os.tmpdir(), "laravel-assist-nested-provider-"));
 

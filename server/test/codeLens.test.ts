@@ -118,6 +118,53 @@ describe("Laravel usage code lens", () => {
     ]);
   });
 
+  it("counts namespace-relative class instantiations with and without constructor parentheses", async () => {
+    const workPath = path.join(rootPath, "app/Kollus/Libraries/ServiceAccount/Works/Register/SetSelfSignupTranscoder.php");
+    const libraryPath = path.join(rootPath, "app/Kollus/Libraries/ServiceAccount/ServiceAccountLibrary.php");
+    const workSource = [
+      "<?php",
+      "namespace App\\Kollus\\Libraries\\ServiceAccount\\Works\\Register;",
+      "",
+      "class SetSelfSignupTranscoder {}",
+    ].join("\n");
+    const librarySource = [
+      "<?php",
+      "namespace App\\Kollus\\Libraries\\ServiceAccount;",
+      "",
+      "class ServiceAccountLibrary",
+      "{",
+      "    public function works(): array",
+      "    {",
+      "        return [",
+      "            new Works\\Register\\SetSelfSignupTranscoder,",
+      "            new Works\\Register\\SetSelfSignupTranscoder(),",
+      "            // new Works\\Register\\SetSelfSignupTranscoder(),",
+      "            'new Works\\\\Register\\\\SetSelfSignupTranscoder',",
+      "        ];",
+      "    }",
+      "}",
+    ].join("\n");
+    await mkdir(path.dirname(workPath), { recursive: true });
+    await writeFile(workPath, workSource);
+    await writeFile(libraryPath, librarySource);
+
+    const document = TextDocument.create(pathToFileURL(workPath).toString(), "php", 1, workSource);
+    const index = indexFixture({
+      phpSources: [
+        { filePath: workPath, source: workSource },
+        { filePath: libraryPath, source: librarySource },
+      ],
+    });
+    const classLens = codeLensesForDocument(document, index).find((lens) => (lens.data as { kind: string }).kind === "phpClass");
+
+    const resolved = await resolveUsageCodeLens(classLens!, document, index);
+
+    expect(resolved.command?.title).toBe("2 usages");
+    expect((resolved.command?.arguments?.[2] as Array<{ range: { start: { line: number } } }>).map(
+      (location) => location.range.start.line,
+    )).toEqual([8, 9]);
+  });
+
   it("counts Laravel route action declarations as controller method usages", async () => {
     const controllerSource = [
       "<?php",

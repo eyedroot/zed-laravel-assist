@@ -5,10 +5,22 @@ export function resolvePhpClassReference(source: string, classReference: string)
   }
 
   const imports = phpImports(source);
+  const namespace = /\bnamespace\s+([^;{\s]+)/.exec(source)?.[1];
   if (normalized.includes("\\")) {
     const [head, ...tail] = normalized.split("\\");
+    if (head.toLowerCase() === "namespace") {
+      return namespace ? [namespace, ...tail].join("\\") : tail.join("\\");
+    }
+
     const importedHead = imports.get(head);
-    return importedHead && tail.length > 0 ? `${importedHead}\\${tail.join("\\")}` : normalized;
+    if (importedHead && tail.length > 0) {
+      return `${importedHead}\\${tail.join("\\")}`;
+    }
+
+    // PHP resolves qualified names without an imported first segment relative
+    // to the current namespace. For example, `new Works\\Register\\Job` in
+    // `App\\Services` refers to `App\\Services\\Works\\Register\\Job`.
+    return namespace ? `${namespace}\\${normalized}` : normalized;
   }
 
   const imported = imports.get(normalized);
@@ -19,7 +31,6 @@ export function resolvePhpClassReference(source: string, classReference: string)
   // PHP resolves unqualified, non-imported names against the file's own
   // namespace, so same-namespace references (no `use` statement) must not be
   // left as bare names that could match an unrelated class elsewhere.
-  const namespace = /\bnamespace\s+([^;{\s]+)/.exec(source)?.[1];
   return namespace ? `${namespace}\\${normalized}` : normalized;
 }
 
