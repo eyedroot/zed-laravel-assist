@@ -691,7 +691,7 @@ describe("Laravel hovers", () => {
       contents: {
         kind: "markdown",
         value:
-          "**Model attribute** `User.status`\n- Column type: `boolean`\n- Cast: `boolean`\n- Table: `users`\n- Migration: `/app/database/migrations/2024_01_01_000000_create_users_table.php`",
+          "**Model attribute** `User.status`\n- Type: `bool`\n- Column type: `boolean`\n- Cast: `boolean`\n- Table: `users`\n- Migration: `/app/database/migrations/2024_01_01_000000_create_users_table.php`",
       },
     });
     expect(hoverForDocument(document, { line: 4, character: 14 }, indexFixture)).toEqual({

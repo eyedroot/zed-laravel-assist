@@ -1092,7 +1092,7 @@ describe("Laravel completions", () => {
     expect(completions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          detail: "users boolean cast: boolean",
+          detail: "users boolean type: bool cast: boolean",
           label: "status",
         }),
         expect.objectContaining({

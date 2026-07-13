@@ -6,6 +6,7 @@ import { LaravelIndex } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
 import { isContainerBindingStringOpeningPrefix } from "./containerResolution.js";
 import { phpunitMockMethodTargetAtOffset } from "./phpunitMocks.js";
+import { castTypeDisplay, resolveCastType } from "./castTypes.js";
 
 export function hoverForDocument(
   document: TextDocument,
@@ -928,6 +929,7 @@ function isKnownModelProperty(
     table?.columns.some((column) => column.name === property) ||
       model.accessors?.includes(property) ||
       model.appends?.includes(property) ||
+      model.casts.includes(property) ||
       model.relations.some((relation) => relation.name === property || `${relation.name}_count` === property),
   );
 }
@@ -937,6 +939,31 @@ function modelPropertyHoverLines(
   property: string,
   index: LaravelIndex,
 ): string[] {
+  if (model.accessors?.includes(property)) {
+    const accessor = model.accessorDetails?.find((candidate) => candidate.name === property);
+    return [
+      `**Model accessor** \`${model.className}.${property}\``,
+      accessor ? `- Source: \`${accessor.source === "attribute" ? "Attribute object" : "classic accessor"}\`` : "",
+      accessor?.returnType ? `- Returns: \`${accessor.returnType}\`` : "",
+      `- File: \`${model.filePath}\``,
+    ];
+  }
+
+  const table = index.schemaTables.find((candidate) => candidate.name === model.tableName);
+  const column = table?.columns.find((candidate) => candidate.name === property);
+  const cast = model.castDetails?.find((candidate) => candidate.name === property);
+  if (column || cast) {
+    const resolvedCast = cast ? resolveCastType(cast, index) : null;
+    return [
+      `**Model attribute** \`${model.className}.${property}\``,
+      resolvedCast ? `- Type: \`${castTypeDisplay(resolvedCast, column)}\`` : "",
+      column?.type ? `- Column type: \`${column.type}\`` : "",
+      cast ? `- Cast: \`${cast.type}\`` : "",
+      `- Table: \`${model.tableName}\``,
+      column ? `- Migration: \`${column.filePath}\`` : `- File: \`${model.filePath}\``,
+    ];
+  }
+
   const relation = model.relations.find((candidate) => candidate.name === property);
   if (relation) {
     return [
@@ -956,16 +983,6 @@ function modelPropertyHoverLines(
     ];
   }
 
-  if (model.accessors?.includes(property)) {
-    const accessor = model.accessorDetails?.find((candidate) => candidate.name === property);
-    return [
-      `**Model accessor** \`${model.className}.${property}\``,
-      accessor ? `- Source: \`${accessor.source === "attribute" ? "Attribute object" : "classic accessor"}\`` : "",
-      accessor?.returnType ? `- Returns: \`${accessor.returnType}\`` : "",
-      `- File: \`${model.filePath}\``,
-    ];
-  }
-
   if (model.appends?.includes(property)) {
     return [
       `**Appended model attribute** \`${model.className}.${property}\``,
@@ -974,16 +991,7 @@ function modelPropertyHoverLines(
     ];
   }
 
-  const table = index.schemaTables.find((candidate) => candidate.name === model.tableName);
-  const column = table?.columns.find((candidate) => candidate.name === property);
-  const cast = model.castDetails?.find((candidate) => candidate.name === property);
-  return [
-    `**Model attribute** \`${model.className}.${property}\``,
-    column?.type ? `- Column type: \`${column.type}\`` : "",
-    cast ? `- Cast: \`${cast.type}\`` : "",
-    `- Table: \`${model.tableName}\``,
-    column ? `- Migration: \`${column.filePath}\`` : "",
-  ];
+  return [];
 }
 
 function tokenAtPosition(line: string, character: number): { start: number; value: string } | null {

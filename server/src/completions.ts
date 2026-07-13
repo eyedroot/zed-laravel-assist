@@ -5,9 +5,10 @@ import {
 } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { fileURLToPath } from "node:url";
-import { LaravelIndex, ModelInfo, PhpClassInfo, SchemaColumnInfo, ValidationFieldInfo } from "./projectIndex.js";
+import { LaravelIndex, ModelCastInfo, ModelInfo, PhpClassInfo, SchemaColumnInfo, ValidationFieldInfo } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
 import { builderReceiverModel, builderVariableModel, resolveRelationPath } from "./instanceTypes.js";
+import { castTypeDisplay, resolveCastType } from "./castTypes.js";
 import {
   containerResolvedMemberClass,
   containerResolvedPhpClasses,
@@ -771,16 +772,27 @@ function modelPropertyCompletions(
 ): CompletionItem[] {
   const items = new Map<string, CompletionItem>();
   const table = index.schemaTables.find((candidate) => candidate.name === model.tableName);
-  const casts = new Map((model.castDetails ?? []).map((cast) => [cast.name, cast.type]));
+  const casts = new Map((model.castDetails ?? []).map((cast) => [cast.name, cast]));
   const accessors = new Map((model.accessorDetails ?? []).map((accessor) => [accessor.name, accessor]));
 
   for (const column of table?.columns ?? []) {
     items.set(column.name, {
       label: column.name,
       kind: CompletionItemKind.Field,
-      detail: modelColumnDetail(column, casts.get(column.name)),
+      detail: modelColumnDetail(column, casts.get(column.name), index),
       data: { filePath: column.filePath, tableName: column.tableName },
     });
+  }
+
+  for (const cast of model.castDetails ?? []) {
+    if (!items.has(cast.name)) {
+      items.set(cast.name, {
+        label: cast.name,
+        kind: CompletionItemKind.Field,
+        detail: modelCastAttributeDetail(model, cast, index),
+        data: { filePath: model.filePath },
+      });
+    }
   }
 
   for (const accessor of model.accessors ?? []) {
@@ -805,28 +817,49 @@ function modelPropertyCompletions(
   }
 
   for (const relation of model.relations) {
-    items.set(relation.name, {
-      label: relation.name,
-      kind: CompletionItemKind.Property,
-      detail: relation.relatedModel
-        ? `Eloquent ${relation.type} relation to ${relation.relatedModel}`
-        : `Eloquent ${relation.type} relation`,
-      data: { filePath: model.filePath },
-    });
-    items.set(`${relation.name}_count`, {
-      label: `${relation.name}_count`,
-      kind: CompletionItemKind.Property,
-      detail: `Count of ${relation.name} (via withCount)`,
-      data: { filePath: model.filePath },
-    });
+    if (!items.has(relation.name)) {
+      items.set(relation.name, {
+        label: relation.name,
+        kind: CompletionItemKind.Property,
+        detail: relation.relatedModel
+          ? `Eloquent ${relation.type} relation to ${relation.relatedModel}`
+          : `Eloquent ${relation.type} relation`,
+        data: { filePath: model.filePath },
+      });
+    }
+    if (!items.has(`${relation.name}_count`)) {
+      items.set(`${relation.name}_count`, {
+        label: `${relation.name}_count`,
+        kind: CompletionItemKind.Property,
+        detail: `Count of ${relation.name} (via withCount)`,
+        data: { filePath: model.filePath },
+      });
+    }
   }
 
   return [...items.values()];
 }
 
-function modelColumnDetail(column: SchemaColumnInfo, castType: string | undefined): string {
-  const detail = schemaColumnDetail(column);
-  return castType ? `${detail} cast: ${castType}` : detail;
+function modelColumnDetail(
+  column: SchemaColumnInfo,
+  cast: ModelCastInfo | undefined,
+  index: LaravelIndex,
+): string {
+  const resolved = cast ? resolveCastType(cast, index) : null;
+  return [
+    schemaColumnDetail(column),
+    resolved ? `type: ${castTypeDisplay(resolved, column)}` : "",
+    cast ? `cast: ${cast.type}` : "",
+  ].filter(Boolean).join(" ");
+}
+
+function modelCastAttributeDetail(model: ModelInfo, cast: ModelCastInfo, index: LaravelIndex): string {
+  const resolved = resolveCastType(cast, index);
+  return [
+    `Cast attribute on ${model.className}`,
+    resolved ? `type: ${castTypeDisplay(resolved)}` : "",
+    `cast: ${cast.type}`,
+  ].filter(Boolean).join(" ");
 }
 
 function modelAccessorDetail(
@@ -1336,13 +1369,13 @@ function isArrayKeyStringOpen(beforeCursor: string): boolean {
 function modelWritableColumnCompletions(model: ModelInfo, index: LaravelIndex): CompletionItem[] {
   const items = new Map<string, CompletionItem>();
   const table = index.schemaTables.find((candidate) => candidate.name === model.tableName);
-  const casts = new Map((model.castDetails ?? []).map((cast) => [cast.name, cast.type]));
+  const casts = new Map((model.castDetails ?? []).map((cast) => [cast.name, cast]));
 
   for (const column of table?.columns ?? []) {
     items.set(column.name, {
       label: column.name,
       kind: CompletionItemKind.Field,
-      detail: modelColumnDetail(column, casts.get(column.name)),
+      detail: modelColumnDetail(column, casts.get(column.name), index),
       data: { filePath: column.filePath, tableName: column.tableName },
     });
   }

@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { resolvePhpClassReference } from "./phpResolver.js";
 
-export const LARAVEL_INDEX_CACHE_VERSION = 40;
+export const LARAVEL_INDEX_CACHE_VERSION = 41;
 
 export interface LaravelIndex {
   // FQN configured at `auth.providers.users.model`, when the project sets one.
@@ -84,6 +84,9 @@ export interface ModelAccessorInfo {
 export interface ModelCastInfo {
   name: string;
   type: string;
+  // Resolved FQCN when the cast value is a `Foo::class` constant (enum casts
+  // and custom cast classes); `type` holds the same FQCN for display.
+  classFqcn?: string;
 }
 
 export interface ModelBuilderMethodInfo {
@@ -1638,26 +1641,45 @@ function attributeNameFromStudly(value: string): string {
 }
 
 function extractModelCasts(source: string): ModelCastInfo[] {
-  const casts = new Map<string, string>();
+  const casts = new Map<string, ModelCastInfo>();
 
-  for (const entry of extractStringMapProperty(source, "casts")) {
-    casts.set(entry.key, entry.value);
-  }
-
-  for (const block of methodReturnArrayBlocks(source, "casts")) {
+  const blocks = [
+    ...stringMapPropertyBlocks(source, "casts"),
+    ...methodReturnArrayBlocks(source, "casts"),
+  ];
+  for (const block of blocks) {
     for (const entry of stringMapEntries(block)) {
-      casts.set(entry.key, entry.value);
+      casts.set(entry.key, { name: entry.key, type: entry.value });
+    }
+
+    // Enum casts and custom cast classes are declared as `Foo::class`
+    // constants; resolve them against the file's imports so downstream type
+    // resolution can match indexed classes by FQCN.
+    for (const entry of classConstMapEntries(block)) {
+      const fqcn = resolvePhpClassReference(source, entry.value);
+      casts.set(entry.key, { classFqcn: fqcn, name: entry.key, type: fqcn });
+    }
+
+    // Some framework casts are configured through static factories, such as
+    // `AsEnumCollection::of(Status::class)` and `AsBinary::uuid()`.
+    for (const entry of classFactoryMapEntries(block)) {
+      const fqcn = resolvePhpClassReference(source, entry.value);
+      casts.set(entry.key, {
+        classFqcn: fqcn,
+        name: entry.key,
+        type: `${fqcn}::${entry.method}()`,
+      });
     }
   }
 
-  return sortBy([...casts.entries()].map(([name, type]) => ({ name, type })), (cast) => cast.name);
+  return sortBy([...casts.values()], (cast) => cast.name);
 }
 
-function extractStringMapProperty(source: string, propertyName: string): Array<{ key: string; value: string }> {
+function stringMapPropertyBlocks(source: string, propertyName: string): string[] {
   const propertyMatch = new RegExp(`\\bprotected\\s+\\$${propertyName}\\s*=\\s*\\[([\\s\\S]*?)\\]\\s*;`).exec(
     source,
   );
-  return propertyMatch ? stringMapEntries(propertyMatch[1]) : [];
+  return propertyMatch ? [propertyMatch[1]] : [];
 }
 
 function methodReturnArrayBlocks(source: string, methodName: string): string[] {
@@ -1677,6 +1699,16 @@ function methodReturnArrayBlocks(source: string, methodName: string): string[] {
 function stringMapEntries(source: string): Array<{ key: string; value: string }> {
   return [...source.matchAll(/['"]([^'"]+)['"]\s*=>\s*['"]([^'"]+)['"]/g)]
     .map((match) => ({ key: match[1], value: match[2] }));
+}
+
+function classConstMapEntries(source: string): Array<{ key: string; value: string }> {
+  return [...source.matchAll(/['"]([^'"]+)['"]\s*=>\s*(\\?[A-Za-z_][A-Za-z0-9_\\]*)::class/g)]
+    .map((match) => ({ key: match[1], value: match[2] }));
+}
+
+function classFactoryMapEntries(source: string): Array<{ key: string; method: string; value: string }> {
+  return [...source.matchAll(/['"]([^'"]+)['"]\s*=>\s*(\\?[A-Za-z_][A-Za-z0-9_\\]*)::([A-Za-z_][A-Za-z0-9_]*)\s*\(/g)]
+    .map((match) => ({ key: match[1], method: match[3], value: match[2] }));
 }
 
 function phpDocReturnType(docblock: string | undefined): string | null {

@@ -669,6 +669,58 @@ describe("project index extraction", () => {
     );
   });
 
+  it("extracts and resolves enum and custom cast class constants", () => {
+    const source = `
+      namespace App\\Models;
+
+      use App\\Casts\\{AsAddress, AsMoney as MoneyCast};
+      use App\\Enums\\Status;
+      use Illuminate\\Database\\Eloquent\\Casts\\{AsBinary, AsEnumCollection};
+
+      class Order extends Model
+      {
+          protected $casts = [
+              'address' => AsAddress::class,
+              'binary_id' => AsBinary::uuid(),
+              'money' => MoneyCast::class.':USD',
+              'status' => Status::class,
+              'statuses' => AsEnumCollection::of(Status::class),
+          ];
+
+          protected function casts(): array
+          {
+              return [
+                  'external' => \\Vendor\\Casts\\ExternalCast::class,
+                  'local' => LocalCast::class,
+              ];
+          }
+      }
+    `;
+
+    expect(extractModelInfo("/app/app/Models/Order.php", source)).toEqual(
+      expect.objectContaining({
+        casts: ["address", "binary_id", "external", "local", "money", "status", "statuses"],
+        castDetails: [
+          { classFqcn: "App\\Casts\\AsAddress", name: "address", type: "App\\Casts\\AsAddress" },
+          {
+            classFqcn: "Illuminate\\Database\\Eloquent\\Casts\\AsBinary",
+            name: "binary_id",
+            type: "Illuminate\\Database\\Eloquent\\Casts\\AsBinary::uuid()",
+          },
+          { classFqcn: "Vendor\\Casts\\ExternalCast", name: "external", type: "Vendor\\Casts\\ExternalCast" },
+          { classFqcn: "App\\Models\\LocalCast", name: "local", type: "App\\Models\\LocalCast" },
+          { classFqcn: "App\\Casts\\AsMoney", name: "money", type: "App\\Casts\\AsMoney" },
+          { classFqcn: "App\\Enums\\Status", name: "status", type: "App\\Enums\\Status" },
+          {
+            classFqcn: "Illuminate\\Database\\Eloquent\\Casts\\AsEnumCollection",
+            name: "statuses",
+            type: "Illuminate\\Database\\Eloquent\\Casts\\AsEnumCollection::of()",
+          },
+        ],
+      }),
+    );
+  });
+
   it("extracts database schema columns from migrations", () => {
     const source = `
       Schema::create('users', function (Blueprint $table) {

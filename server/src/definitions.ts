@@ -8,6 +8,7 @@ import { LaravelIndex, SourceRange } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
 import { containerResolvedMemberClass, containerResolvedPhpClasses, isContainerBindingStringOpeningPrefix } from "./containerResolution.js";
 import { phpunitMockMethodTargetAtOffset } from "./phpunitMocks.js";
+import { resolveCastType } from "./castTypes.js";
 
 export function definitionsForDocument(
   document: TextDocument,
@@ -978,25 +979,31 @@ function modelPropertyTarget(
   property: string,
   index: LaravelIndex,
 ): { filePath: string; range?: SourceRange } | null {
-  const relation = model.relations.find((candidate) => candidate.name === property || `${candidate.name}_count` === property);
-  if (relation) {
-    const method = model.methodDetails?.find((candidate) => candidate.name === relation.name);
-    return { filePath: model.filePath, ...(method ? { range: method.range } : {}) };
-  }
-
   const accessor = model.accessorDetails?.find((candidate) => candidate.name === property);
   if (accessor) {
     return { filePath: model.filePath, ...(accessor.range ? { range: accessor.range } : {}) };
   }
 
-  if (model.appends?.includes(property)) {
-    return { filePath: model.filePath };
+  const cast = model.castDetails?.find((candidate) => candidate.name === property);
+  const resolvedCast = cast ? resolveCastType(cast, index) : null;
+  if (resolvedCast?.castClass) {
+    return { filePath: resolvedCast.castClass.filePath, range: resolvedCast.castClass.nameRange };
   }
 
   const table = index.schemaTables.find((candidate) => candidate.name === model.tableName);
   const column = table?.columns.find((candidate) => candidate.name === property);
   if (column) {
     return { filePath: column.filePath };
+  }
+
+  const relation = model.relations.find((candidate) => candidate.name === property || `${candidate.name}_count` === property);
+  if (relation) {
+    const method = model.methodDetails?.find((candidate) => candidate.name === relation.name);
+    return { filePath: model.filePath, ...(method ? { range: method.range } : {}) };
+  }
+
+  if (model.appends?.includes(property)) {
+    return { filePath: model.filePath };
   }
 
   return model.fillable.includes(property) || model.guarded.includes(property) || model.casts.includes(property)
