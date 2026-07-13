@@ -504,9 +504,8 @@ function routeControllerClassContextAtPosition(
   ) ?? null;
 }
 
-// Handles the legacy string route action syntax `'WorkspaceController@store'`:
-// the class part navigates to the controller file, the method part navigates
-// to the action inside it.
+// Handles legacy string route actions such as `'WorkspaceController@store'`
+// and invokable controllers such as `'ShowWorkspaceController'`.
 function routeControllerStringTargetsAtPosition(
   document: TextDocument,
   position: Position,
@@ -514,12 +513,13 @@ function routeControllerStringTargetsAtPosition(
 ): Location[] | null {
   const line = document.getText().split(/\r?\n/)[position.line] ?? "";
   const token = quotedStringAtPosition(line, position.character);
-  if (!token || !token.value.includes("@")) {
+  if (!token) {
     return null;
   }
 
-  const prefix = line.slice(0, token.start - 1);
-  if (!isRouteActionStringPrefix(prefix)) {
+  const source = document.getText();
+  const quoteOffset = document.offsetAt({ line: position.line, character: token.start - 1 });
+  if (!isRouteActionStringAtOffset(source, quoteOffset)) {
     return null;
   }
 
@@ -529,6 +529,12 @@ function routeControllerStringTargetsAtPosition(
   );
   if (controllers.length === 0) {
     return null;
+  }
+
+  if (!token.value.includes("@")) {
+    return controllers.map((controller) =>
+      Location.create(pathToFileURL(controller.filePath).toString(), controllerActionRange(controller, "__invoke")),
+    );
   }
 
   const cursorInAction = Boolean(action) && position.character > token.start + classReference.length;
@@ -545,9 +551,69 @@ function routeControllerStringTargetsAtPosition(
   );
 }
 
-function isRouteActionStringPrefix(prefix: string): boolean {
-  return /(?:Route::|\$router->)(?:get|post|put|patch|delete|options|any|match|fallback)\s*\([^;\n]*,\s*$/.test(prefix) ||
-    /['"](?:uses|controller)['"]\s*=>\s*$/.test(prefix);
+function isRouteActionStringAtOffset(source: string, quoteOffset: number): boolean {
+  const prefix = source.slice(0, quoteOffset);
+  if (/['"](?:uses|controller)['"]\s*=>\s*$/.test(prefix)) {
+    return true;
+  }
+
+  const structure = maskPhpStringsAndComments(prefix);
+  const calls = [...structure.matchAll(/(?:\bRoute::|\$router->)(get|post|put|patch|delete|options|any|match|fallback)\s*\(/g)];
+  for (let index = calls.length - 1; index >= 0; index -= 1) {
+    const call = calls[index];
+    const callOffset = call.index ?? 0;
+    const openParenOffset = callOffset + call[0].lastIndexOf("(");
+    const argument = routeArgumentBeforeString(structure, openParenOffset);
+    const expectedArgument = call[1] === "fallback" ? 0 : call[1] === "match" ? 2 : 1;
+    if (argument === expectedArgument) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function routeArgumentBeforeString(structure: string, openParenOffset: number): number | null {
+  let argument = 0;
+  let depth = 0;
+  let hasArgumentCode = false;
+
+  for (let index = openParenOffset + 1; index < structure.length; index += 1) {
+    const char = structure[index];
+    if (char === "(" || char === "[" || char === "{") {
+      depth += 1;
+      hasArgumentCode = true;
+      continue;
+    }
+    if (char === ")" || char === "]" || char === "}") {
+      if (depth === 0) {
+        return null;
+      }
+      depth -= 1;
+      hasArgumentCode = true;
+      continue;
+    }
+    if (char === ";" && depth === 0) {
+      return null;
+    }
+    if (char === "," && depth === 0) {
+      argument += 1;
+      hasArgumentCode = false;
+      continue;
+    }
+    if (!/\s/.test(char)) {
+      hasArgumentCode = true;
+    }
+  }
+
+  return depth === 0 && !hasArgumentCode ? argument : null;
+}
+
+function maskPhpStringsAndComments(source: string): string {
+  return source.replace(
+    /'(?:\\[\s\S]|[^'\\])*'|"(?:\\[\s\S]|[^"\\])*"|\/\/[^\r\n]*|#[^\r\n]*|\/\*[\s\S]*?(?:\*\/|$)/g,
+    (match) => match.replace(/[^\r\n]/g, " "),
+  );
 }
 
 // Route action strings resolve relative to a group namespace the indexer does

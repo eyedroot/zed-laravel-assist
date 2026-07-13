@@ -1364,6 +1364,59 @@ describe("Laravel definitions", () => {
     ]);
   });
 
+  it("resolves invokable string route controllers to __invoke", () => {
+    const sources = [
+      "<?php\nRoute::get('/', 'WorkspaceController');",
+      "<?php\nRoute::match(['GET', 'POST'], '/', 'WorkspaceController');",
+      "<?php\nRoute::fallback('WorkspaceController');",
+      "<?php\nRoute::get(\n    '/',\n    /* invokable controller */ 'Workspace\\\\WorkspaceController',\n);",
+    ];
+    const expected = [
+      {
+        range: {
+          end: { character: 27, line: 2 },
+          start: { character: 19, line: 2 },
+        },
+        uri: "file:///app/modules/Console/Controllers/Workspace/WorkspaceController.php",
+      },
+    ];
+
+    for (const source of sources) {
+      const document = TextDocument.create("file:///app/modules/Console/router.php", "php", 1, source);
+      const controllerOffset = source.lastIndexOf("WorkspaceController");
+      expect(definitionsForDocument(document, document.positionAt(controllerOffset + 5), indexFixture)).toEqual(expected);
+    }
+  });
+
+  it("falls back to the controller file when a string route controller has no indexed __invoke action", () => {
+    const source = "<?php\nRoute::get('/users', 'UserController');";
+    const document = TextDocument.create("file:///app/routes/web.php", "php", 1, source);
+
+    expect(definitionsForDocument(document, document.positionAt(source.indexOf("UserController") + 5), indexFixture)).toEqual([
+      {
+        range: {
+          end: { character: 0, line: 0 },
+          start: { character: 0, line: 0 },
+        },
+        uri: "file:///app/app/Http/Controllers/UserController.php",
+      },
+    ]);
+  });
+
+  it("does not treat controller-like strings inside route closures or unrelated expressions as route actions", () => {
+    const source = [
+      "<?php",
+      "Route::get('/', function () { return 'WorkspaceController'; });",
+      "$controller = 'WorkspaceController';",
+    ].join("\n");
+    const document = TextDocument.create("file:///app/modules/Console/router.php", "php", 1, source);
+    const firstController = source.indexOf("WorkspaceController");
+    const secondController = source.lastIndexOf("WorkspaceController");
+
+    expect(definitionsForDocument(document, document.positionAt(firstController + 5), indexFixture)).toEqual([]);
+    expect(definitionsForDocument(document, document.positionAt(secondController + 5), indexFixture)).toEqual([]);
+  });
+
   it("resolves middleware aliases with parameters and in later array elements", () => {
     const document = TextDocument.create(
       "file:///app/routes/web.php",
@@ -1567,6 +1620,13 @@ const indexFixture: LaravelIndex = {
     {
       actionDetails: [
         {
+          name: "__invoke",
+          range: {
+            end: { character: 27, line: 2 },
+            start: { character: 19, line: 2 },
+          },
+        },
+        {
           name: "store",
           range: {
             end: { character: 24, line: 12 },
@@ -1574,7 +1634,7 @@ const indexFixture: LaravelIndex = {
           },
         },
       ],
-      actions: ["index", "store"],
+      actions: ["__invoke", "index", "store"],
       className: "WorkspaceController",
       filePath: "/app/modules/Console/Controllers/Workspace/WorkspaceController.php",
       namespace: "Modules\\Console\\Controllers\\Workspace",
