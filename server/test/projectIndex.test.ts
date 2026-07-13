@@ -35,7 +35,7 @@ import {
 import { resolvePhpClassReference } from "../src/phpResolver.js";
 
 describe("project index extraction", () => {
-  it("extracts public PHP type methods for container-resolved completions", () => {
+  it("extracts PHP type methods with visibility metadata", () => {
     const source = [
       "<?php",
       "namespace App\\Services;",
@@ -49,18 +49,34 @@ describe("project index extraction", () => {
       "class ServiceAccountLibrary implements ServiceAccountInterface",
       "{",
       "    public function setGrade(string $plan): void {}",
-      "    protected function internalOnly(): void {}",
+      "    protected function pipe(mixed $payload, ...$bundle): void {}",
+      "    private static function buildWorks(): array { return []; }",
+      "    final public function register(array $data): void",
+      "    {",
+      "        $callback = function ($nested) { return $nested; };",
+      "    }",
       "}",
     ].join("\n");
 
     const classes = extractPhpClasses("/app/app/Services/ServiceAccountLibrary.php", source);
 
-    expect(classes.find((phpClass) => phpClass.fqcn === "App\\Services\\ServiceAccountInterface")?.methods?.map((method) => method.name)).toEqual([
-      "register",
-      "setGrade",
+    expect(
+      classes
+        .find((phpClass) => phpClass.fqcn === "App\\Services\\ServiceAccountInterface")
+        ?.methods?.map((method) => [method.name, method.visibility]),
+    ).toEqual([
+      ["register", "public"],
+      ["setGrade", "public"],
     ]);
-    expect(classes.find((phpClass) => phpClass.fqcn === "App\\Services\\ServiceAccountLibrary")?.methods?.map((method) => method.name)).toEqual([
-      "setGrade",
+    expect(
+      classes
+        .find((phpClass) => phpClass.fqcn === "App\\Services\\ServiceAccountLibrary")
+        ?.methods?.map((method) => [method.name, method.visibility]),
+    ).toEqual([
+      ["buildWorks", "private"],
+      ["pipe", "protected"],
+      ["register", "public"],
+      ["setGrade", "public"],
     ]);
   });
 

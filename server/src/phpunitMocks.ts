@@ -48,12 +48,16 @@ export function phpunitMockMethodTargetsAtOffset(
     return [];
   }
 
-  return (phpClass.methods ?? []).map((method) => ({
-    classFqcn: phpClass.fqcn,
-    filePath: phpClass.filePath,
-    kind: phpClass.kind,
-    method,
-  }));
+  // PHPUnit test doubles can only stub methods callable from the outside, so
+  // mock method-name strings stay limited to public members.
+  return (phpClass.methods ?? [])
+    .filter((method) => method.visibility === "public")
+    .map((method) => ({
+      classFqcn: phpClass.fqcn,
+      filePath: phpClass.filePath,
+      kind: phpClass.kind,
+      method,
+    }));
 }
 
 export function phpunitMockMethodTargetAtOffset(

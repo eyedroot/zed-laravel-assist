@@ -1171,7 +1171,7 @@ describe("Laravel definitions", () => {
           isFinal: false,
           kind: "interface",
           methods: [
-            { name: "setGrade", range: { end: { character: 29, line: 5 }, start: { character: 21, line: 5 } } },
+            { name: "setGrade", range: { end: { character: 29, line: 5 }, start: { character: 21, line: 5 } }, visibility: "public" as const },
           ],
           name: "ServiceAccountInterface",
           nameRange: { end: { character: 31, line: 3 }, start: { character: 8, line: 3 } },
@@ -1186,7 +1186,7 @@ describe("Laravel definitions", () => {
           isFinal: false,
           kind: "class",
           methods: [
-            { name: "provisionWorkspace", range: { end: { character: 36, line: 8 }, start: { character: 18, line: 8 } } },
+            { name: "provisionWorkspace", range: { end: { character: 36, line: 8 }, start: { character: 18, line: 8 } }, visibility: "public" as const },
           ],
           name: "ServiceAccountLibrary",
           nameRange: { end: { character: 27, line: 3 }, start: { character: 6, line: 3 } },
@@ -1836,7 +1836,7 @@ const phpunitMockIndex: LaravelIndex = {
       isFinal: false,
       kind: "interface",
       methods: [
-        { name: "isSelfSignupGrade", range: { end: { character: 35, line: 6 }, start: { character: 20, line: 6 } } },
+        { name: "isSelfSignupGrade", range: { end: { character: 35, line: 6 }, start: { character: 20, line: 6 } }, visibility: "public" as const },
       ],
       name: "SelfSignupPlanRegistry",
       nameRange: { end: { character: 32, line: 3 }, start: { character: 10, line: 3 } },

@@ -28,7 +28,7 @@ describe("Laravel usage code lens", () => {
     await rm(rootPath, { force: true, recursive: true });
   });
 
-  it("creates unresolved usage lenses for indexed PHP classes and public methods", () => {
+  it("creates unresolved usage lenses for indexed PHP classes and methods of every visibility", () => {
     const source = [
       "<?php",
       "namespace App\\Services;",
@@ -37,6 +37,7 @@ describe("Laravel usage code lens", () => {
       "{",
       "    public function completeSignup(): void {}",
       "    protected function internalOnly(): void {}",
+      "    private function helper(): void {}",
       "}",
     ].join("\n");
     const document = TextDocument.create(pathToFileURL(servicePath).toString(), "php", 1, source);
@@ -44,8 +45,8 @@ describe("Laravel usage code lens", () => {
 
     const lenses = codeLensesForDocument(document, index);
 
-    expect(lenses.map((lens) => (lens.data as { kind: string }).kind)).toEqual(["phpClass", "phpMethod"]);
-    expect(lenses.map((lens) => lens.command)).toEqual([undefined, undefined]);
+    expect(lenses.map((lens) => (lens.data as { kind: string }).kind)).toEqual(["phpClass", "phpMethod", "phpMethod", "phpMethod"]);
+    expect(lenses.map((lens) => lens.command)).toEqual([undefined, undefined, undefined, undefined]);
   });
 
   it("resolves class and method usage counts with show-references commands", async () => {
@@ -115,6 +116,183 @@ describe("Laravel usage code lens", () => {
       pathToFileURL(controllerPath).toString(),
       pathToFileURL(controllerPath).toString(),
       pathToFileURL(controllerPath).toString(),
+    ]);
+  });
+
+  it("counts internal $this-> calls for protected methods so a single usage can be jumped to directly", async () => {
+    const librarySource = [
+      "<?php",
+      "namespace App\\Services;",
+      "",
+      "class SelfSignupService",
+      "{",
+      "    public function completeSignup(): void",
+      "    {",
+      "        $this->pipe(['payload'], true);",
+      "    }",
+      "",
+      "    protected function pipe(array $payload, ...$bundle): void {}",
+      "}",
+    ].join("\n");
+    await writeFile(servicePath, librarySource);
+
+    const document = TextDocument.create(pathToFileURL(servicePath).toString(), "php", 1, librarySource);
+    const index = indexFixture({ phpSources: [{ filePath: servicePath, source: librarySource }] });
+    const pipeLens = codeLensesForDocument(document, index).find(
+      (lens) => (lens.data as { methodName?: string }).methodName === "pipe",
+    );
+
+    const resolved = await resolveUsageCodeLens(pipeLens!, document, index);
+
+    expect(resolved.command?.title).toBe("1 usage");
+    expect((resolved.command?.arguments?.[2] as Array<{ range: { start: { line: number } } }>).map(
+      (location) => location.range.start.line,
+    )).toEqual([7]);
+  });
+
+  it("counts interface-typed receiver calls as implementation method usages", async () => {
+    const interfacePath = path.join(rootPath, "app/Libraries/ServiceAccount/ServiceAccountInterface.php");
+    const libraryPath = path.join(rootPath, "app/Libraries/ServiceAccount/ServiceAccountLibrary.php");
+    const consumerPath = path.join(rootPath, "app/Services/AccountSignupService.php");
+    const unrelatedPath = path.join(rootPath, "app/Services/UnrelatedRegistrar.php");
+    const interfaceSource = [
+      "<?php",
+      "namespace App\\Libraries\\ServiceAccount;",
+      "",
+      "interface ServiceAccountInterface",
+      "{",
+      "    public function register(array $data, bool $includeInvitation = true);",
+      "}",
+    ].join("\n");
+    const librarySource = [
+      "<?php",
+      "namespace App\\Libraries\\ServiceAccount;",
+      "",
+      "class ServiceAccountLibrary implements ServiceAccountInterface",
+      "{",
+      "    public function register(array $data, bool $includeInvitation = true)",
+      "    {",
+      "        return null;",
+      "    }",
+      "}",
+    ].join("\n");
+    const unrelatedSource = [
+      "<?php",
+      "namespace App\\Services;",
+      "",
+      "class UnrelatedRegistrar",
+      "{",
+      "    public function register(array $data): void {}",
+      "}",
+    ].join("\n");
+    const consumerSource = [
+      "<?php",
+      "namespace App\\Services;",
+      "",
+      "use App\\Libraries\\ServiceAccount\\ServiceAccountInterface;",
+      "",
+      "class AccountSignupService",
+      "{",
+      "    public function handle(array $data): void",
+      "    {",
+      "        $serviceAccountLibrary = app(ServiceAccountInterface::class, [$data, true]);",
+      "        $serviceAccountLibrary->register(['name' => 'demo']);",
+      "",
+      "        /** @var ServiceAccountInterface $fromDocblock */",
+      "        $fromDocblock->register([]);",
+      "",
+      "        $unrelated = new UnrelatedRegistrar();",
+      "        $unrelated->register([]);",
+      "    }",
+      "}",
+    ].join("\n");
+    await mkdir(path.dirname(interfacePath), { recursive: true });
+    await mkdir(path.dirname(unrelatedPath), { recursive: true });
+    await writeFile(interfacePath, interfaceSource);
+    await writeFile(libraryPath, librarySource);
+    await writeFile(consumerPath, consumerSource);
+    await writeFile(unrelatedPath, unrelatedSource);
+
+    const document = TextDocument.create(pathToFileURL(libraryPath).toString(), "php", 1, librarySource);
+    const index = indexFixture({
+      phpSources: [
+        { filePath: interfacePath, source: interfaceSource },
+        { filePath: libraryPath, source: librarySource },
+        { filePath: consumerPath, source: consumerSource },
+        { filePath: unrelatedPath, source: unrelatedSource },
+      ],
+    });
+    const registerLens = codeLensesForDocument(document, index).find(
+      (lens) => (lens.data as { methodName?: string }).methodName === "register",
+    );
+
+    const resolved = await resolveUsageCodeLens(registerLens!, document, index);
+
+    expect(resolved.command?.title).toBe("2 usages");
+    expect((resolved.command?.arguments?.[2] as Array<{ uri: string }>).map((location) => location.uri)).toEqual([
+      pathToFileURL(consumerPath).toString(),
+      pathToFileURL(consumerPath).toString(),
+    ]);
+  });
+
+  it("counts parent-typed receiver calls toward subclass method overrides", async () => {
+    const basePath = path.join(rootPath, "app/Notifications/BaseNotifier.php");
+    const childPath = path.join(rootPath, "app/Notifications/MailNotifier.php");
+    const callerPath = path.join(rootPath, "app/Services/NotifierConsumer.php");
+    const baseSource = [
+      "<?php",
+      "namespace App\\Notifications;",
+      "",
+      "class BaseNotifier",
+      "{",
+      "    public function send(array $payload): void {}",
+      "}",
+    ].join("\n");
+    const childSource = [
+      "<?php",
+      "namespace App\\Notifications;",
+      "",
+      "class MailNotifier extends BaseNotifier",
+      "{",
+      "    public function send(array $payload): void {}",
+      "}",
+    ].join("\n");
+    const callerSource = [
+      "<?php",
+      "namespace App\\Services;",
+      "",
+      "use App\\Notifications\\BaseNotifier;",
+      "",
+      "class NotifierConsumer",
+      "{",
+      "    public function dispatch(BaseNotifier $notifier): void",
+      "    {",
+      "        $notifier->send([]);",
+      "    }",
+      "}",
+    ].join("\n");
+    await mkdir(path.dirname(basePath), { recursive: true });
+    await writeFile(basePath, baseSource);
+    await writeFile(childPath, childSource);
+    await writeFile(callerPath, callerSource);
+
+    const document = TextDocument.create(pathToFileURL(childPath).toString(), "php", 1, childSource);
+    const index = indexFixture({
+      phpSources: [
+        { filePath: basePath, source: baseSource },
+        { filePath: childPath, source: childSource },
+        { filePath: callerPath, source: callerSource },
+      ],
+    });
+    const sendLens = codeLensesForDocument(document, index).find(
+      (lens) => (lens.data as { methodName?: string }).methodName === "send",
+    );
+
+    const resolved = await resolveUsageCodeLens(sendLens!, document, index);
+
+    expect(resolved.command?.title).toBe("1 usage");
+    expect((resolved.command?.arguments?.[2] as Array<{ uri: string }>).map((location) => location.uri)).toEqual([
+      pathToFileURL(callerPath).toString(),
     ]);
   });
 

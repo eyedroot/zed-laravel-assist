@@ -2,7 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { resolvePhpClassReference } from "./phpResolver.js";
 
-export const LARAVEL_INDEX_CACHE_VERSION = 39;
+export const LARAVEL_INDEX_CACHE_VERSION = 40;
 
 export interface LaravelIndex {
   // FQN configured at `auth.providers.users.model`, when the project sets one.
@@ -275,9 +275,12 @@ export interface PhpClassInfo {
   namespace: string | null;
 }
 
+export type PhpMethodVisibility = "public" | "protected" | "private";
+
 export interface PhpMethodInfo {
   name: string;
   range: SourceRange;
+  visibility: PhpMethodVisibility;
 }
 
 export interface ControllerActionInfo {
@@ -1916,12 +1919,15 @@ function extractPhpClassMethodDetails(
   const bodyEnd = matchingBraceIndex(source, bodyStart) ?? source.length;
   const body = source.slice(bodyStart + 1, bodyEnd);
   const methods = new Map<string, PhpMethodInfo>();
+  // Class-like bodies require at least one modifier before `function` so
+  // closures and nested helper declarations inside method bodies never match;
+  // interfaces allow the bare `function name(...)` form their syntax permits.
   const methodPattern = kind === "interface"
-    ? /\b(?:public\s+)?function\s+&?([A-Za-z_][A-Za-z0-9_]*)\s*\(/g
-    : /\b(?:(?:abstract|final|static)\s+)*public\s+(?:(?:abstract|final|static)\s+)*function\s+&?([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
+    ? /\b((?:public\s+)?)function\s+&?([A-Za-z_][A-Za-z0-9_]*)\s*\(/g
+    : /\b((?:(?:abstract|final|static|public|protected|private)\s+)+)function\s+&?([A-Za-z_][A-Za-z0-9_]*)\s*\(/g;
 
   for (const match of body.matchAll(methodPattern)) {
-    const name = match[1];
+    const name = match[2];
     if (name.startsWith("__") || methods.has(name)) {
       continue;
     }
@@ -1931,10 +1937,22 @@ function extractPhpClassMethodDetails(
     methods.set(name, {
       name,
       range: sourceRangeForOffset(source, nameOffset, name.length),
+      visibility: methodVisibilityFromModifiers(match[1] ?? ""),
     });
   }
 
   return sortBy([...methods.values()], (method) => method.name);
+}
+
+function methodVisibilityFromModifiers(modifiers: string): PhpMethodVisibility {
+  if (/\bprivate\b/.test(modifiers)) {
+    return "private";
+  }
+  if (/\bprotected\b/.test(modifiers)) {
+    return "protected";
+  }
+
+  return "public";
 }
 
 function matchingBraceIndex(source: string, openIndex: number): number | null {

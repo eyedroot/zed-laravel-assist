@@ -487,23 +487,30 @@ function isLikelyClassReference(source: string, start: number, value: string): b
     /:\s*\??$/.test(before);
 }
 
+// A call site counts toward the target method when runtime dispatch can land
+// on the target class: the receiver is the target itself, a subclass that
+// inherits the method, or a supertype (interface or parent class) whose typed
+// call sites dispatch to the target's implementation — matching how dedicated
+// PHP IDEs attribute interface-typed calls to implementation methods.
 function classCanReferenceTarget(candidateFqcn: string, targetFqcn: string, index: LaravelIndex): boolean {
   const normalizedCandidate = normalizeClassReference(candidateFqcn);
   const normalizedTarget = normalizeClassReference(targetFqcn);
-  if (normalizedCandidate === normalizedTarget) {
-    return true;
-  }
+  return normalizedCandidate === normalizedTarget ||
+    inheritsFrom(normalizedCandidate, normalizedTarget, index) ||
+    inheritsFrom(normalizedTarget, normalizedCandidate, index);
+}
 
-  const candidate = index.phpClasses.find((phpClass) => normalizeClassReference(phpClass.fqcn) === normalizedCandidate);
-  if (!candidate) {
+function inheritsFrom(descendantFqcn: string, ancestorFqcn: string, index: LaravelIndex): boolean {
+  const descendant = index.phpClasses.find((phpClass) => normalizeClassReference(phpClass.fqcn) === descendantFqcn);
+  if (!descendant) {
     return false;
   }
 
   const visited = new Set<string>();
-  const queue = [...candidate.extends, ...candidate.implements].map(normalizeClassReference);
+  const queue = [...descendant.extends, ...descendant.implements].map(normalizeClassReference);
   while (queue.length > 0) {
     const parent = queue.shift() as string;
-    if (parent === normalizedTarget) {
+    if (parent === ancestorFqcn) {
       return true;
     }
     if (visited.has(parent)) {

@@ -512,7 +512,9 @@ function phpClassMethodCompletionItems(
 
   for (const phpClass of classes) {
     for (const method of phpClass.methods ?? []) {
-      if (items.has(method.name)) {
+      // Container-resolved instances are accessed from the outside, so only
+      // public members are callable at these completion sites.
+      if (method.visibility !== "public" || items.has(method.name)) {
         continue;
       }
 

@@ -538,6 +538,7 @@ describe("Laravel completions", () => {
             {
               name: "setGrade",
               range: { end: { character: 29, line: 5 }, start: { character: 21, line: 5 } },
+              visibility: "public" as const,
             },
           ],
           name: "ServiceAccountInterface",
@@ -556,6 +557,7 @@ describe("Laravel completions", () => {
             {
               name: "provisionWorkspace",
               range: { end: { character: 36, line: 8 }, start: { character: 18, line: 8 } },
+              visibility: "public" as const,
             },
           ],
           name: "ServiceAccountLibrary",
@@ -1527,8 +1529,8 @@ const phpunitMockIndex: LaravelIndex = {
       isFinal: false,
       kind: "interface",
       methods: [
-        { name: "isSelfSignupGrade", range: { end: { character: 35, line: 6 }, start: { character: 20, line: 6 } } },
-        { name: "fallbackGrade", range: { end: { character: 33, line: 7 }, start: { character: 20, line: 7 } } },
+        { name: "isSelfSignupGrade", range: { end: { character: 35, line: 6 }, start: { character: 20, line: 6 } }, visibility: "public" as const },
+        { name: "fallbackGrade", range: { end: { character: 33, line: 7 }, start: { character: 20, line: 7 } }, visibility: "public" as const },
       ],
       name: "SelfSignupPlanRegistry",
       nameRange: { end: { character: 32, line: 3 }, start: { character: 10, line: 3 } },

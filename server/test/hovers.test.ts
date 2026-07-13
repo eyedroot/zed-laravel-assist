@@ -1054,7 +1054,7 @@ const phpunitMockIndex: LaravelIndex = {
       isFinal: false,
       kind: "interface",
       methods: [
-        { name: "isSelfSignupGrade", range: { end: { character: 35, line: 6 }, start: { character: 20, line: 6 } } },
+        { name: "isSelfSignupGrade", range: { end: { character: 35, line: 6 }, start: { character: 20, line: 6 } }, visibility: "public" as const },
       ],
       name: "SelfSignupPlanRegistry",
       nameRange: { end: { character: 32, line: 3 }, start: { character: 10, line: 3 } },
