@@ -670,7 +670,7 @@ describe("Laravel completions", () => {
     );
   });
 
-  it("completes PHPUnit mock method names from createMock assignments", () => {
+  it("completes PHPUnit mock method names for overridable methods only", () => {
     const source = [
       "<?php",
       "$registry = $this->createMock(SelfSignupPlanRegistry::class);",
@@ -678,20 +678,25 @@ describe("Laravel completions", () => {
     ].join("\n");
     const document = TextDocument.create("file:///app/tests/Unit/RegistryTest.php", "php", 1, source);
 
-    expect(
-      completionsForDocument(
-        document,
-        { line: 2, character: "$registry->method('".length },
-        phpunitMockIndex,
-      ),
-    ).toEqual(
+    const completions = completionsForDocument(
+      document,
+      { line: 2, character: "$registry->method('".length },
+      phpunitMockIndex,
+    );
+
+    expect(completions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           detail: "PHPUnit mock method App\\Contracts\\SelfSignupPlanRegistry",
           label: "isSelfSignupGrade",
         }),
+        expect.objectContaining({
+          detail: "PHPUnit mock method App\\Contracts\\SelfSignupPlanRegistry",
+          label: "resolvePlanTier",
+        }),
       ]),
     );
+    expect(completions.map((item) => item.label)).not.toContain("planCacheKey");
   });
 
   it("completes Artisan command names", () => {
@@ -1527,10 +1532,12 @@ const phpunitMockIndex: LaravelIndex = {
       implements: [],
       isAbstract: false,
       isFinal: false,
-      kind: "interface",
+      kind: "class",
       methods: [
         { name: "isSelfSignupGrade", range: { end: { character: 35, line: 6 }, start: { character: 20, line: 6 } }, visibility: "public" as const },
         { name: "fallbackGrade", range: { end: { character: 33, line: 7 }, start: { character: 20, line: 7 } }, visibility: "public" as const },
+        { name: "resolvePlanTier", range: { end: { character: 38, line: 8 }, start: { character: 23, line: 8 } }, visibility: "protected" as const },
+        { name: "planCacheKey", range: { end: { character: 33, line: 9 }, start: { character: 21, line: 9 } }, visibility: "private" as const },
       ],
       name: "SelfSignupPlanRegistry",
       nameRange: { end: { character: 32, line: 3 }, start: { character: 10, line: 3 } },

@@ -48,10 +48,11 @@ export function phpunitMockMethodTargetsAtOffset(
     return [];
   }
 
-  // PHPUnit test doubles can only stub methods callable from the outside, so
-  // mock method-name strings stay limited to public members.
+  // PHPUnit test doubles subclass the original, so any overridable method is
+  // stubbable: public and protected qualify, while private methods are not
+  // inherited and configuring them makes PHPUnit throw at runtime.
   return (phpClass.methods ?? [])
-    .filter((method) => method.visibility === "public")
+    .filter((method) => method.visibility !== "private")
     .map((method) => ({
       classFqcn: phpClass.fqcn,
       filePath: phpClass.filePath,
