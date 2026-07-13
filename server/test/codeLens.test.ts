@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { codeLensesForDocument, resolveUsageCodeLens } from "../src/codeLens.js";
-import { emptyIndex, extractPhpClasses, extractRouteInfo, LaravelIndex } from "../src/projectIndex.js";
+import { emptyIndex, extractModelInfo, extractPhpClasses, extractRouteInfo, extractSchemaTables, LaravelIndex } from "../src/projectIndex.js";
 
 describe("Laravel usage code lens", () => {
   let rootPath: string;
@@ -343,6 +343,188 @@ describe("Laravel usage code lens", () => {
     )).toEqual([8, 9]);
   });
 
+  it("counts Eloquent relation property reads as relation method usages", async () => {
+    const modelPath = path.join(rootPath, "app/Models/Country.php");
+    const repositoryPath = path.join(rootPath, "app/Repositories/LanguageRepository.php");
+    const modelSource = [
+      "<?php",
+      "namespace App\\Models;",
+      "",
+      "use Illuminate\\Database\\Eloquent\\Model;",
+      "",
+      "class Country extends Model",
+      "{",
+      "    public function language()",
+      "    {",
+      "        return $this->belongsTo(Language::class, 'language_id');",
+      "    }",
+      "",
+      "    public function locale(): string",
+      "    {",
+      "        return 'ko';",
+      "    }",
+      "}",
+    ].join("\n");
+    const repositorySource = [
+      "<?php",
+      "namespace App\\Repositories;",
+      "",
+      "use App\\Models\\Country;",
+      "",
+      "class LanguageRepository",
+      "{",
+      "    public function findLanguage(?int $countryId, Country $typedCountry)",
+      "    {",
+      "        $country = Country::find($countryId);",
+      "",
+      "        $first = $country->language;",
+      "        $second = $typedCountry?->",
+      "            /* relation property */",
+      "            language;",
+      "        $third = Country::query()->first()?->language;",
+      "        $fourth = $typedCountry /* receiver */ ?->language;",
+      "",
+      "        // $country->language;",
+      "        $label = 'not $country->language';",
+      "        $country->language /* assignment */ = null;",
+      "        $country->languages;",
+      "        $untyped->language;",
+      "        $country->locale;",
+      "        return [$first, $second, $third, $fourth];",
+      "    }",
+      "}",
+    ].join("\n");
+    await mkdir(path.dirname(modelPath), { recursive: true });
+    await mkdir(path.dirname(repositoryPath), { recursive: true });
+    await writeFile(modelPath, modelSource);
+    await writeFile(repositoryPath, repositorySource);
+
+    const document = TextDocument.create(pathToFileURL(modelPath).toString(), "php", 1, modelSource);
+    const index = indexFixture({
+      modelSources: [{ filePath: modelPath, source: modelSource }],
+      phpSources: [{ filePath: repositoryPath, source: repositorySource }],
+    });
+    const languageLens = codeLensesForDocument(document, index).find(
+      (lens) => (lens.data as { methodName?: string }).methodName === "language",
+    );
+
+    const resolved = await resolveUsageCodeLens(languageLens!, document, index);
+
+    const locations = (resolved.command?.arguments?.[2] as Array<{ range: { start: { line: number } }; uri: string }>).map(
+      (location) => ({ line: location.range.start.line, uri: location.uri }),
+    );
+    expect(locations).toEqual([
+      { line: 11, uri: pathToFileURL(repositoryPath).toString() },
+      { line: 14, uri: pathToFileURL(repositoryPath).toString() },
+      { line: 15, uri: pathToFileURL(repositoryPath).toString() },
+      { line: 16, uri: pathToFileURL(repositoryPath).toString() },
+    ]);
+    expect(resolved.command?.title).toBe("4 usages");
+
+    const localeLens = codeLensesForDocument(document, index).find(
+      (lens) => (lens.data as { methodName?: string }).methodName === "locale",
+    );
+    expect((await resolveUsageCodeLens(localeLens!, document, index)).command?.title).toBe("0 usages");
+  });
+
+  it("does not count relation property reads shadowed by a same-name schema column, cast, or accessor", async () => {
+    const modelPath = path.join(rootPath, "app/Models/Country.php");
+    const repositoryPath = path.join(rootPath, "app/Repositories/LanguageRepository.php");
+    const migrationPath = path.join(rootPath, "database/migrations/2024_01_01_000000_create_countries_table.php");
+    const modelSource = [
+      "<?php",
+      "namespace App\\Models;",
+      "",
+      "use Illuminate\\Database\\Eloquent\\Model;",
+      "",
+      "class Country extends Model",
+      "{",
+      "    protected $casts = ['timezone' => 'string'];",
+      "",
+      "    public function language()",
+      "    {",
+      "        return $this->belongsTo(Language::class, 'language_id');",
+      "    }",
+      "",
+      "    public function timezone()",
+      "    {",
+      "        return $this->belongsTo(Timezone::class, 'timezone_id');",
+      "    }",
+      "",
+      "    public function currency()",
+      "    {",
+      "        return $this->belongsTo(Currency::class, 'currency_id');",
+      "    }",
+      "",
+      "    public function getCurrencyAttribute(): string",
+      "    {",
+      "        return 'USD';",
+      "    }",
+      "}",
+    ].join("\n");
+    const repositorySource = [
+      "<?php",
+      "namespace App\\Repositories;",
+      "",
+      "use App\\Models\\Country;",
+      "",
+      "class LanguageRepository",
+      "{",
+      "    public function findLanguage(Country $country)",
+      "    {",
+      "        $country->language()->first();",
+      "        $country->timezone()->first();",
+      "        $country->currency()->first();",
+      "        $country->language;",
+      "        $country->timezone;",
+      "        $country->currency;",
+      "    }",
+      "}",
+    ].join("\n");
+    const migrationSource = [
+      "<?php",
+      "use Illuminate\\Database\\Migrations\\Migration;",
+      "use Illuminate\\Database\\Schema\\Blueprint;",
+      "use Illuminate\\Support\\Facades\\Schema;",
+      "",
+      "return new class extends Migration {",
+      "    public function up(): void",
+      "    {",
+      "        Schema::create('countries', function (Blueprint $table) {",
+      "            $table->id();",
+      "            $table->string('language');",
+      "        });",
+      "    }",
+      "};",
+    ].join("\n");
+    await mkdir(path.dirname(modelPath), { recursive: true });
+    await mkdir(path.dirname(repositoryPath), { recursive: true });
+    await mkdir(path.dirname(migrationPath), { recursive: true });
+    await writeFile(modelPath, modelSource);
+    await writeFile(repositoryPath, repositorySource);
+    await writeFile(migrationPath, migrationSource);
+
+    const document = TextDocument.create(pathToFileURL(modelPath).toString(), "php", 1, modelSource);
+    const index = indexFixture({
+      migrationSources: [{ filePath: migrationPath, source: migrationSource }],
+      modelSources: [{ filePath: modelPath, source: modelSource }],
+      phpSources: [{ filePath: repositoryPath, source: repositorySource }],
+    });
+    const lenses = codeLensesForDocument(document, index);
+    for (const [methodName, expectedLine] of [["language", 9], ["timezone", 10], ["currency", 11]] as const) {
+      const lens = lenses.find((candidate) => (candidate.data as { methodName?: string }).methodName === methodName);
+      const resolved = await resolveUsageCodeLens(lens!, document, index);
+
+      // The schema column, cast, and accessor each take precedence over a
+      // same-name relation for property reads. The explicit method calls are
+      // still references to their relation methods.
+      expect(resolved.command?.title).toBe("1 usage");
+      expect((resolved.command?.arguments?.[2] as Array<{ range: { start: { line: number } } }>).map(
+        (location) => location.range.start.line,
+      )).toEqual([expectedLine]);
+    }
+  });
+
   it("counts Laravel route action declarations as controller method usages", async () => {
     const controllerSource = [
       "<?php",
@@ -379,15 +561,21 @@ describe("Laravel usage code lens", () => {
 });
 
 function indexFixture({
+  migrationSources = [],
+  modelSources = [],
   phpSources = [],
   routeSources = [],
 }: {
+  migrationSources?: Array<{ filePath: string; source: string }>;
+  modelSources?: Array<{ filePath: string; source: string }>;
   phpSources?: Array<{ filePath: string; source: string }>;
   routeSources?: Array<{ filePath: string; source: string }>;
 }): LaravelIndex {
   return {
     ...emptyIndex(),
-    phpClasses: phpSources.flatMap(({ filePath, source }) => extractPhpClasses(filePath, source)),
+    models: modelSources.flatMap(({ filePath, source }) => extractModelInfo(filePath, source) ?? []),
+    phpClasses: [...phpSources, ...modelSources].flatMap(({ filePath, source }) => extractPhpClasses(filePath, source)),
     routes: routeSources.flatMap(({ filePath, source }) => extractRouteInfo(filePath, source)),
+    schemaTables: migrationSources.flatMap(({ filePath, source }) => extractSchemaTables(filePath, source)),
   };
 }

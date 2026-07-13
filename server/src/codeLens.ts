@@ -3,10 +3,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { CodeLens, Location, Range } from "vscode-languageserver/node.js";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { containerResolvedMemberClass } from "./containerResolution.js";
+import { instanceMemberTargetForPrefix } from "./instanceTypes.js";
 import { LaravelIndex, SourceRange } from "./projectIndex.js";
 import { resolvePhpClassReference } from "./phpResolver.js";
 
 const SHOW_REFERENCES_COMMAND = "editor.action.showReferences";
+const PHP_TRIVIA_PATTERN = String.raw`(?:\s|//[^\r\n]*(?:\r?\n|$)|#[^\r\n]*(?:\r?\n|$)|/\*(?:(?!\*/)[\s\S])*\*/)*`;
 
 type UsageCodeLensData =
   | {
@@ -253,7 +255,86 @@ function phpMethodUsageLocationsInSource(
     }
   }
 
+  if (relationPropertyModel(target, index)) {
+    locations.push(...relationPropertyUsageLocationsInSource(source, target, index));
+  }
+
   return locations;
+}
+
+// Reading an Eloquent relationship as a property ($country->language)
+// dispatches to the relationship method through Model::getRelationValue, so
+// those sites count as method usages — matching how dedicated Laravel IDEs
+// attribute them. Writes ($country->language = ...) go through setAttribute
+// and never invoke the method, so assignment targets are excluded.
+function relationPropertyUsageLocationsInSource(
+  source: UsageSource,
+  target: Extract<UsageCodeLensData, { kind: "phpMethod" }>,
+  index: LaravelIndex,
+): Location[] {
+  const locations: Location[] = [];
+  const method = escapeRegExp(target.methodName);
+
+  for (const match of source.source.matchAll(new RegExp(`(\\?->|->)${PHP_TRIVIA_PATTERN}(${method})\\b(?!${PHP_TRIVIA_PATTERN}\\()`, "g"))) {
+    const propertyStart = (match.index ?? 0) + match[0].length - match[2].length;
+    if (isOffsetInIgnoredPhpSource(source.source, propertyStart)) {
+      continue;
+    }
+
+    const afterProperty = source.source
+      .slice(propertyStart + target.methodName.length)
+      .replace(new RegExp(`^${PHP_TRIVIA_PATTERN}`), "");
+    if (/^\s*(?:=(?![=>])|\?\?=)/.test(afterProperty)) {
+      continue;
+    }
+
+    const operatorEnd = (match.index ?? 0) + match[1].length;
+    const receiverPrefix = source.source
+      .slice(0, operatorEnd)
+      .replace(new RegExp(`${PHP_TRIVIA_PATTERN}(\\?->|->)$`), "$1");
+    const memberTarget = instanceMemberTargetForPrefix(
+      source.source,
+      receiverPrefix,
+      index,
+      target.methodName,
+    );
+    const receiverClass = memberTarget
+      ? (memberTarget.model.namespace ? `${memberTarget.model.namespace}\\${memberTarget.model.className}` : memberTarget.model.className)
+      : null;
+    if (memberTarget?.kind === "relation" && receiverClass && classCanReferenceTarget(receiverClass, target.classFqcn, index)) {
+      locations.push(Location.create(pathToFileURL(source.filePath).toString(), sourceRangeForOffset(source.source, propertyStart, target.methodName.length)));
+    }
+  }
+
+  return locations;
+}
+
+// Laravel resolves loaded attributes, casts, and accessors before relations.
+// Static analysis cannot know which columns a query selected, so indexed table
+// columns are conservatively treated as attributes that shadow same-name
+// relation methods.
+function relationPropertyModel(
+  target: Extract<UsageCodeLensData, { kind: "phpMethod" }>,
+  index: LaravelIndex,
+): LaravelIndex["models"][number] | null {
+  const model = index.models.find((candidate) =>
+    !candidate.isTrait &&
+    sameClassReference(target.classFqcn, candidate.namespace ? `${candidate.namespace}\\${candidate.className}` : candidate.className),
+  );
+  if (!model || !model.relationships.includes(target.methodName)) {
+    return null;
+  }
+
+  if ((model.accessors ?? []).includes(target.methodName) || model.casts.includes(target.methodName)) {
+    return null;
+  }
+
+  const table = index.schemaTables.find((candidate) => candidate.name === model.tableName);
+  if (table?.columns.some((column) => column.name === target.methodName)) {
+    return null;
+  }
+
+  return model;
 }
 
 function routeActionUsageLocations(
